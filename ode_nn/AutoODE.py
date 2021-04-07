@@ -94,12 +94,15 @@ class AutoODE_COVID(nn.Module):
         R_pred = [self.init_R]
         D_pred = [self.init_D]
         for n in range(num_steps - 1):
-            S_pred.append(S_pred[n] + self.f_S(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step)
-            E_pred.append(E_pred[n] + self.f_E(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step)
-            I_pred.append(I_pred[n] + self.f_I(I_pred[n], E_pred[n]) * self.step)
+            dS = self.f_S(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step
+            dE = self.f_E(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step
+            dI = self.f_I(I_pred[n], E_pred[n]) * self.step
             dR = self.f_R(I_pred[n]) * self.step
+            S_pred.append(S_pred[n] + dS)
+            E_pred.append(E_pred[n] + dE)
+            I_pred.append(I_pred[n] + dI)
             R_pred.append(R_pred[n] + dR)
-            D_pred.append(D_pred[n] + self.fraction_R(n) * dR)
+            D_pred.append(D_pred[n] + dR * self.fraction_D(n))
         y_pred = torch.cat([torch.stack(S_pred).transpose(0,1).unsqueeze(-1),
                            (torch.stack(E_pred)*(1-self.mu.unsqueeze(0))*self.sigma.unsqueeze(0)).transpose(0,1).unsqueeze(-1),
                             torch.stack(E_pred).transpose(0,1).unsqueeze(-1),
@@ -113,11 +116,11 @@ class AutoODE_COVID(nn.Module):
     # for a member of the population at state X, to transition into state Y.
     # The transition graph is S->E->I->R, with the extra edge E->U. D is a subset of R.
     
-    # treat the states as isolated
+    # treat the regions as isolated
     def isolated_transition_S_E(self, I_n, E_n, beta, n):
-        return beta[:, n+1] * (I_n + E_n)
+        return beta[:, n+1] * (I_n + E_n) # XXX this model is unusual in passing infections from both E and I...
     
-    # model inter-state transitions (XXX should we use self.graph here???)
+    # model inter-region transmissions (XXX should we use self.graph here???)
     def transition_S_E(self, I_n, E_n, beta, n):
         return beta[:, n+1] * (torch.mm(self.A, (I_n + E_n).reshape(-1,1)).squeeze(1))
     
@@ -132,7 +135,10 @@ class AutoODE_COVID(nn.Module):
         return self.gamma
     
     def fraction_D(self, n):
-        return self.a * torch.exp(- self.b * (n + 1) * self.step)
+        return self.a * torch.exp(-self.b * (n + 1) * self.step)
+    
+    def fraction_D_v2(self, n):
+        return self.a * (n * self.step) + self.b
     
     # Net population increase per unit time
     
@@ -148,8 +154,8 @@ class AutoODE_COVID(nn.Module):
     def f_R(self, I_n):
         return self.transition_I_R() * I_n
 
-    def RK4_update(self, f_n, k1, k2, k3, k4):
-        return f_n + 1/6 * (k1 + 2 * k2 + 2 * k3 + k4) * self.step
+    def RK4_update(self, k1, k2, k3, k4):
+        return (k1 + 2 * k2 + 2 * k3 + k4) / 6 * self.step
     
     # Can we just use the torchdiffeq functions here? (odeint or odeint_adjoint)
     def RK4(self, num_steps):
@@ -202,13 +208,16 @@ class AutoODE_COVID(nn.Module):
             k4_I = self.f_I(I_plus_k3, E_plus_k3) 
             k4_R = self.f_R(I_plus_k3)
 
-            S_pred.append(self.RK4_update(S_pred[n], k1_S, k2_S, k3_S, k4_S))
-            E_pred.append(self.RK4_update(E_pred[n], k1_E, k2_E, k3_E, k4_E))
-            I_pred.append(self.RK4_update(I_pred[n], k1_I, k2_I, k3_I, k4_I))
-            R_pred.append(self.RK4_update(R_pred[n], k1_R, k2_R, k3_R, k4_R))
+            dS = self.RK4_update(k1_S, k2_S, k3_S, k4_S)
+            dE = self.RK4_update(k1_E, k2_E, k3_E, k4_E)
+            dI = self.RK4_update(k1_I, k2_I, k3_I, k4_I)
+            dR = self.RK4_update(k1_R, k2_R, k3_R, k4_R)
             
-        for n in range(num_steps - 1):
-            D_pred.append(D_pred[n] + (self.a * (n * self.step) + self.b) * (R_pred[n+1] - R_pred[n]))
+            S_pred.append(S_pred[n] + dS)
+            E_pred.append(E_pred[n] + dE)
+            I_pred.append(I_pred[n] + dI)
+            R_pred.append(R_pred[n] + dR)
+            D_pred.append(D_pred[n] + dR * self.fraction_D_v2(n)) # XXX why does the factor differ from Euler??
 
         y_pred = torch.cat([torch.stack(S_pred).transpose(0,1).unsqueeze(-1),
                             (torch.stack(E_pred)*(1-self.mu.unsqueeze(0))*self.sigma.unsqueeze(0)).transpose(0,1).unsqueeze(-1),
