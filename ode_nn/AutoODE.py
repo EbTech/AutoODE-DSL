@@ -62,7 +62,8 @@ class AutoODE_COVID(nn.Module):
             self.A = np.zeros((num_regions, num_regions))
             np.fill_diagonal(self.A, 1.0)
             self.A = torch.from_numpy(self.A).float().to(device)
-
+        
+        # XXX self.graph used to pre-multiply self.A in the Euler code; should we do that too???
         self.graph = graph
         if beta is None:
             if n_breaks > 0:
@@ -70,11 +71,11 @@ class AutoODE_COVID(nn.Module):
             else:
                 self.beta = nn.Parameter(torch.rand(num_regions).to(device)/10)
         else:
-            self.beta = beta
+            self.beta = beta                                             # transmission multiplier
         self.n_breaks = n_breaks
-        self.gamma = nn.Parameter(torch.rand(num_regions).to(device)/10)
-        self.sigma = nn.Parameter(torch.rand(num_regions).to(device)/10)
-        self.mu = nn.Parameter(torch.rand(num_regions).to(device)/10)
+        self.gamma = nn.Parameter(torch.rand(num_regions).to(device)/10) # 1 / mean(infection_period)
+        self.sigma = nn.Parameter(torch.rand(num_regions).to(device)/10) # 1 / mean(incubation_period)
+        self.mu = nn.Parameter(torch.rand(num_regions).to(device)/10)    # fraction of infections that are discovered
         self.step = torch.tensor(0.01).float().to(device)
         self.a = nn.Parameter(torch.rand(num_regions).to(device)/10)
         self.b = nn.Parameter(torch.rand(num_regions).to(device)/10)
@@ -93,17 +94,12 @@ class AutoODE_COVID(nn.Module):
         R_pred = [self.init_R]
         D_pred = [self.init_D]
         for n in range(num_steps - 1):
-            if self.graph is None:
-                S_pred.append(S_pred[n] - beta[:, n+1] * (torch.mm(self.A, ((I_pred[n] + E_pred[n]) * S_pred[n]).reshape(-1,1)).squeeze(1)) * self.step)
-                E_pred.append(E_pred[n] + (beta[:, n+1] * S_pred[n] * (I_pred[n]+ E_pred[n]) - self.sigma * E_pred[n]) * self.step)
-                # XXX shouldn't the rates in and out here match?
-            else:
-                S_pred.append(S_pred[n] - beta[:, n+1] * (torch.mm(self.graph*self.A, ((I_pred[n] + E_pred[n]) * S_pred[n]).reshape(-1,1)).squeeze(1)) * self.step)
-                E_pred.append(E_pred[n] + (beta[:, n+1] * (torch.mm(self.graph*self.A, ((I_pred[n] + E_pred[n]) * S_pred[n]).reshape(-1,1)).squeeze(1)) - self.sigma * E_pred[n]) * self.step)
-             
-            I_pred.append(I_pred[n] + (self.mu * self.sigma * E_pred[n] - self.gamma*I_pred[n]) * self.step)
-            R_pred.append(R_pred[n] + self.gamma * I_pred[n] * self.step)
-            D_pred.append(D_pred[n] + self.a * torch.exp(- self.b * (n + 1) * self.step) * (R_pred[n+1] - R_pred[n]))
+            S_pred.append(S_pred[n] + self.f_S(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step)
+            E_pred.append(E_pred[n] + self.f_E(S_pred[n], I_pred[n], E_pred[n], beta, n) * self.step)
+            I_pred.append(I_pred[n] + self.f_I(I_pred[n], E_pred[n]) * self.step)
+            dR = self.f_R(I_pred[n]) * self.step
+            R_pred.append(R_pred[n] + dR)
+            D_pred.append(D_pred[n] + self.fraction_R(n) * dR)
         y_pred = torch.cat([torch.stack(S_pred).transpose(0,1).unsqueeze(-1),
                            (torch.stack(E_pred)*(1-self.mu.unsqueeze(0))*self.sigma.unsqueeze(0)).transpose(0,1).unsqueeze(-1),
                             torch.stack(E_pred).transpose(0,1).unsqueeze(-1),
@@ -112,18 +108,45 @@ class AutoODE_COVID(nn.Module):
                             torch.stack(D_pred).transpose(0,1).unsqueeze(-1)], dim = -1)
         return y_pred
     
-    # XXX doesn't use self.graph, where Euler code does use it here....???
-    def f_S(self, S_n, I_n, E_n, beta, n): 
-        return -beta[:, n+1] * (torch.mm(self.A, ((I_n + E_n) * S_n).reshape(-1,1)).squeeze(1))
+    # The states are Markov; that is, transitions depend only on the current state.
+    # transition_X_Y gives the probability per unit time (TODO: specify the unit of time), 
+    # for a member of the population at state X, to transition into state Y.
+    # The transition graph is S->E->I->R, with the extra edge E->U. D is a subset of R.
     
-    def f_E(self, S_n, I_n, E_n, beta, n): 
-        return beta[:, n+1] * S_n * (I_n + E_n) - self.sigma * E_n
+    # treat the states as isolated
+    def isolated_transition_S_E(self, I_n, E_n, beta, n):
+        return beta[:, n+1] * (I_n + E_n)
+    
+    # model inter-state transitions (XXX should we use self.graph here???)
+    def transition_S_E(self, I_n, E_n, beta, n):
+        return beta[:, n+1] * (torch.mm(self.A, (I_n + E_n).reshape(-1,1)).squeeze(1))
+    
+    # E branches off to either U (with probability 1-mu) or I (with probability mu)
+    def transition_E_UI(self):
+        return self.sigma
+    
+    def transition_E_I(self):
+        return self.mu * self.transition_E_UI()
+    
+    def transition_I_R(self):
+        return self.gamma
+    
+    def fraction_D(self, n):
+        return self.a * torch.exp(- self.b * (n + 1) * self.step)
+    
+    # Net population increase per unit time
+    
+    def f_S(self, S_n, I_n, E_n, beta, n):
+        return -self.transition_S_E(I_n, E_n, beta, n) * S_n
+    
+    def f_E(self, S_n, I_n, E_n, beta, n):
+        return self.transition_S_E(I_n, E_n, beta, n) * S_n - self.transition_E_UI() * E_n
     
     def f_I(self, I_n, E_n):
-        return self.mu * self.sigma * E_n - self.gamma*I_n
+        return self.transition_E_I() * E_n - self.transition_I_R() * I_n
     
     def f_R(self, I_n):
-        return self.gamma*I_n
+        return self.transition_I_R() * I_n
 
     def RK4_update(self, f_n, k1, k2, k3, k4):
         return f_n + 1/6 * (k1 + 2 * k2 + 2 * k3 + k4) * self.step
