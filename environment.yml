@@ -1,0 +1,19 @@
+name: ode
+dependencies:
+  - python>=3.8,<3.9
+  - pip
+  - pytorch>=1.8,<1.9
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - pytest
+  - coverage
+  - isort
+  - black
+  - flake8
+  - pre-commit
+  - notebook
+  - tqdm
+  - pip:
+    - torchdiffeq
