@@ -1,3 +1,22 @@
+## TODO ITEMS:
+
+- write a paper outline, envision the figures we want to produce/experiments we want to run
+- write base classes and an API
+  - Model(torch.nn.Module) - has a forward(SEUR_{t,i}) that spits out SEUR..._{t+1,i} (this class doesn't know about data)
+  - higher level class that takes in a Model, spits out a loss (knows about data)
+  - dataset class that takes in the CSVs from that other covid repo and delivers it in a tensor (and is cleaned)
+    - cleaning includes: correct adjacently matrix, produce a mask from missing values
+  - (w/ simulated data) write plotting routines (e.g. SEUR... vs time, gif of infected % spreading over US states heatmap, visualizing the MMD)
+- a test suite (lol)
+- a literature review especially w.r.t. parameters in compartmental models
+
+Outstanding research questions we need to answer (this counts as work todo!):
+
+- what exactly is the research question we are asking (e.g. making the best predictive model vs showcasing how to include demographic information)... leaning toward the latter
+- will readers care about the MLE of the comparment model's parameters?
+- how to we compare to previous models (what are the metrics of comparison)
+- 
+
 ## Paper: 
 Rui Wang, Danielle Maddix, Christos Faloutsos, Yuyang Wang, Rose Yu [Bridging Physics-based and Data-driven modeling for
 Learning Dynamical Systems](https://arxiv.org/pdf/2011.10616.pdf), Annual Conference on Learning for Dynamics and Control (L4DC), 2021
