@@ -4,7 +4,7 @@
 - write base classes and an API
   - Model(torch.nn.Module) - has a forward(SEUR_{t,i}) that spits out SEUR..._{t+1,i} (this class doesn't know about data)
   - higher level class that takes in a Model, spits out a loss (knows about data)
-  - dataset class that takes in the CSVs from that other covid repo and delivers it in a tensor (and is cleaned)
+  - torch.utils.data.dataset class that takes in the CSVs from that other covid repo and delivers it in a tensor (and is cleaned)
     - cleaning includes: correct adjacently matrix, produce a mask from missing values
   - (w/ simulated data) write plotting routines (e.g. SEUR... vs time, gif of infected % spreading over US states heatmap, visualizing the MMD)
 - a test suite (lol)
