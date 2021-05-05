@@ -1,3 +1,4 @@
+exclude: ^(Legacy/)
 repos:
   - repo: local
     hooks:
