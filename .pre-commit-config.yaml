@@ -1,4 +1,4 @@
-exclude: ^(Legacy/)
+exclude: ^(ode_nn/Legacy/)
 repos:
   - repo: local
     hooks:
