@@ -1,3 +1,29 @@
+## Setup & installation
+
+Install dependencies by installing and activating the environment:
+
+```bash
+conda env create -f environment.yml
+conda activate ode
+```
+
+If you want to contribute, please install `pre-commit` to stay PEP8 compliant:
+
+```bash
+pre-commit install
+```
+
+To access the data you have to set up the git submodule for the
+[COVID-19](https://github.com/CSSEGISandData/COVID-19) repository:
+
+```bash
+cd data/COVID-19
+git submodule init
+git submodule update
+```
+
+
+
 ## TODO ITEMS:
 
 - write a paper outline, envision the figures we want to produce/experiments we want to run
