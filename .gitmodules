@@ -1,0 +1,3 @@
+[submodule "ode_nn/data/COVID-19"]
+	path = ode_nn/data/COVID-19
+	url = git@github.com:CSSEGISandData/COVID-19.git
