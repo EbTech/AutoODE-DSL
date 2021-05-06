@@ -19,9 +19,7 @@ import pandas as pd
 import torch
 
 datapath: Path = (
-    Path("..")
-    / ".."
-    / ".."
+    Path(__file__).parent
     / "COVID-19"
     / "csse_covid_19_data"
     / "csse_covid_19_daily_reports_us"
