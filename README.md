@@ -17,7 +17,7 @@ To access the data you have to set up the git submodule for the
 [COVID-19](https://github.com/CSSEGISandData/COVID-19) repository:
 
 ```bash
-cd data/COVID-19
+cd ode_nn/data/COVID-19
 git submodule init
 git submodule update
 ```
