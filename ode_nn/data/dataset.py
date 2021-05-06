@@ -41,33 +41,45 @@ class Dataset(torch.utils.data.Dataset):
         self.dropped = dropped or [
             "Diamond Princess",
             "Grand Princess",
-            "Puerto Rico",
             "Guam",
             "Virgin Islands",
             "Northern Mariana Islands",
             "American Samoa",
+            "Recovered",  # trash row
         ]
 
-        dates: List[date] = [
-            datetime.strptime(c.rstrip(".csv"), "%m-%d-%Y").date()
-            for c in os.listdir(self.datapath)
-            if c.endswith(".csv")
-        ]
+        dates, files = self.get_dates_and_files(self.datapath)
 
-        # TODO - cut on date range
-        files: List[str] = sorted(glob(str(self.datapath / "*.csv")))
+        self.df = pd.concat(starmap(self.read_csv, zip(files, dates)), axis=0)
 
-        self.df = pd.concat(
-            starmap(self.read_csv, zip(files, dates)), axis=1, join="inner"
-        )
+    def get_dates_and_files(self, filepath: Path) -> Tuple[List[str], List[date]]:
+        """
+        Get all files to read in and their dates (as a ``datetime.date``
+        object).
+
+        Args:
+          filepath (Path): path to where all the files are
+        """
+        file_dates = []
+        for f in os.listdir(filepath):
+            if not f.endswith(".csv"):
+                continue
+            a_date = datetime.strptime(f.rstrip(".csv"), "%m-%d-%Y").date()
+            a_file = filepath / f
+            file_dates.append((a_date, a_file))
+        files_dates = sorted(file_dates, key=lambda x: x[0])
+        return list(zip(*files_dates))
 
     def read_csv(self, filepath: str, a_date: date) -> pd.DataFrame:
-        df = (
-            pd.read_csv(filepath)
-            .set_index("Province_State")[["Confirmed", "Recovered", "Deaths"]]
-            .sort_values(by="Confirmed", ascending=False)
-            .drop(self.dropped, axis=0)
+        df = pd.read_csv(filepath)
+        df = df[~df["Province_State"].isin(self.dropped)]
+        df.insert(0, "date", a_date)
+        df = df.pivot(
+            index="date",
+            columns="Province_State",
+            values=["Confirmed", "Recovered", "Deaths"],
         )
+        df.columns.names = ["Population", "Province_State"]
         return df
 
 
@@ -75,6 +87,6 @@ ds = Dataset()
 df = ds.df
 
 print(df.head())
-print(df.tail())
-print(df.index)
+# print(df.index)
 print(df.shape)
+# print(df.columns)
