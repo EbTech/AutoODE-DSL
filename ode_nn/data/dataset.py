@@ -21,7 +21,7 @@ import pandas as pd
 import torch
 
 
-class Dataset(torch.utils.data.Dataset):
+class C19Dataset(torch.utils.data.Dataset):
     """
     A torch-compatible dataset. This class reads in the data in the COVID-19
     daily US report files and constructs the data into two forms: a pandas
@@ -110,7 +110,7 @@ class Dataset(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
-    ds = Dataset()
+    ds = C19Dataset()
     df = ds.df
     tensor = ds.tensor
 
