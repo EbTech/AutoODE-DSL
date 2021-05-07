@@ -51,7 +51,7 @@ class C19Dataset(torch.utils.data.Dataset):
             / "csse_covid_19_daily_reports_us"
         )
 
-        self.dropped = dropped or [
+        self.dropped = dropped if dropped is not None else [
             "Diamond Princess",
             "Grand Princess",
             "Guam",
