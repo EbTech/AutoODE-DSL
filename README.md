@@ -13,6 +13,12 @@ conda env create -f environment.yml
 conda activate ode
 ```
 
+Or alternatively, if using pip:
+
+```bash
+pip install -r requirements.txt
+```
+
 Install this package:
 ```bash
 python setup.py install

@@ -1,0 +1,14 @@
+torch>=1.8,<1.9
+numpy
+scipy
+matplotlib
+pandas
+pytest
+coverage
+isort
+black
+flake8
+pre-commit
+notebook
+tqdm
+torchdiffeq
