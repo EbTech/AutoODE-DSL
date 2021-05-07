@@ -8,7 +8,7 @@ dist = setup(
     descrption="ODE models of C19",
     long_description=long_desc,
     url="https://github.com/EbTech/AutoODE-DSL",
-    packags=["ode_nn"],
+    packages=["ode_nn"],
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
