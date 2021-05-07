@@ -1,3 +1,9 @@
+# AutoODE Redux
+
+This project aims to improve upon the original `AutoODE` work that this
+originally forked from. We hope to improve deep learning models using
+data-driving priors and probabilistic losses on the known statistics.
+
 ## Setup & installation
 
 Install dependencies by installing and activating the environment:
@@ -5,6 +11,11 @@ Install dependencies by installing and activating the environment:
 ```bash
 conda env create -f environment.yml
 conda activate ode
+```
+
+Install this package:
+```bash
+python setup.py install
 ```
 
 If you want to contribute, please install `pre-commit` to stay PEP8 compliant:
