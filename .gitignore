@@ -1,2 +1,7 @@
+# emacs backups
+*~
+
+ode_nn.egg-info
+
 __pycache__
 .ipynb_checkpoints
