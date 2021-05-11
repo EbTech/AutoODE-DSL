@@ -19,9 +19,9 @@ Or alternatively, if using pip:
 pip install -r requirements.txt
 ```
 
-Install this package:
+Install this package in development mode (so you get edits without re-installing):
 ```bash
-python setup.py install
+python setup.py develop
 ```
 
 If you want to contribute, please install `pre-commit` to stay PEP8 compliant:
@@ -34,7 +34,6 @@ To access the data you have to set up the git submodule for the
 [COVID-19](https://github.com/CSSEGISandData/COVID-19) repository:
 
 ```bash
-cd ode_nn/data/COVID-19
 git submodule init
 git submodule update
 ```
