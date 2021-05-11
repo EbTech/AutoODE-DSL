@@ -42,6 +42,7 @@ class C19Dataset(torch.utils.data.Dataset):
         self,
         datapath: Optional[Union[str, Path]] = None,
         dropped: Optional[List[str]] = None,
+        meta_path: Optional[Union[str, Path]] = None,
     ):
 
         self.datapath: Path = datapath or (
@@ -51,24 +52,38 @@ class C19Dataset(torch.utils.data.Dataset):
             / "csse_covid_19_daily_reports_us"
         )
 
-        self.dropped = dropped if dropped is not None else [
-            "Diamond Princess",
-            "Grand Princess",
-            "Guam",
-            "Virgin Islands",
-            "Northern Mariana Islands",
-            "American Samoa",
-            "Recovered",  # trash row
-        ]
+        self.dropped = (
+            dropped
+            if dropped is not None
+            else [
+                "Diamond Princess",
+                "Grand Princess",
+                "Guam",
+                "Virgin Islands",
+                "Northern Mariana Islands",
+                "American Samoa",
+                "Recovered",  # trash row
+            ]
+        )
+
+        self.meta_path = meta_path or Path(__file__).parent / "state-info.csv"
+        self.meta = pd.read_csv(self.meta_path, index_col="abbr", keep_default_na=False)
 
         dates, files = self.get_dates_and_files(self.datapath)
 
         self.df: pd.DataFrame = pd.concat(
             starmap(self.read_csv, zip(files, dates)), axis=0
         )
+
+        self.state_names: List[str] = [
+            n for k, n in self.df.columns[: len(self.df.columns) // 3]
+        ]
+        assert [n for k, n in self.df.columns] == self.state_names * 3
+
         self.tensor: torch.Tensor = torch.tensor(
             self.df.to_numpy().reshape(len(self.df), 3, -1)
         )
+        self.adjacency: torch.Tensor = self.get_adjacency()
 
     def __getitem__(self, index: int) -> torch.Tensor:
         """Index the :attr:`tensor` attribute."""
@@ -99,14 +114,35 @@ class C19Dataset(torch.utils.data.Dataset):
     def read_csv(self, filepath: str, a_date: date) -> pd.DataFrame:
         df = pd.read_csv(filepath)
         df = df[~df["Province_State"].isin(self.dropped)]
+        df.sort_values("Province_State", inplace=True)  # should already be true
         df.insert(0, "date", a_date)
         df = df.pivot(
             index="date",
             columns="Province_State",
-            values=["Confirmed", "Recovered", "Deaths"],
+            values=[
+                "Confirmed",
+                "Recovered",
+                "Deaths",
+            ],  # length 3 matters in __init__ too
         )
+        # columns are now [(Confirmed, Alabama), (Confirmed, Alaska), ...]
         df.columns.names = ["Population", "Province_State"]
         return df
+
+    def get_adjacency(self) -> torch.Tensor:
+        adj = torch.zeros((len(self.state_names),) * 2, dtype=float)
+        state_to_i = {n: i for i, n in enumerate(self.state_names)}
+        stab_to_state = {a: n for a, n in zip(self.meta.index, self.meta.name)}
+
+        for n, adj_ns in zip(self.meta.name, self.meta.adjacent):
+            if n not in state_to_i:
+                continue
+            i = state_to_i[n]
+            adj[i, i] = 1
+            for adj_n in adj_ns.split():
+                adj[i, state_to_i[stab_to_state[adj_n]]] = 1
+
+        return adj
 
 
 if __name__ == "__main__":
