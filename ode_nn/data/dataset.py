@@ -3,7 +3,7 @@ Read in the data from the 'COVID-19' repo and manipulate it.
 
 Save the data as a pandas dataframe and also a torch tensor.
 
-Given N dates, M states (or geographic regions), and Q observables
+Given N dates, Q observables, and M geographic regions (e.g., states),
 the dataframes will be of shape ``(N, Q * M)``, and the tensor
 will be of shape ``(N, Q, M)`` so that we can easily multiply on the
 M-by-M adjacency matrix.
