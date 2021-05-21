@@ -63,26 +63,22 @@ class Seiturd(nn.Module):
         )
         # A_{i,j} = percentage of infected people in state j who interact with
         # each susceptible person of state i
-        self.connectivity = nn.Parameter(
-            torch.rand((num_regions, num_regions), device=device)
-        )
-        np.fill_diagonal(self.connectivity, 1.0)
-        self.connectivity = torch.from_numpy(self.connectivity)
+        self.connectivity = nn.Parameter(torch.eye(num_regions, device=device))
 
         # S = susceptible population
-        self.latent_S = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_S = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # E = exposed population in the non-contagious incubation period
-        self.latent_E = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_E = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # I = infected population (contagious but not tested)
-        self.latent_I = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_I = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # T = infected population that has tested positive
-        self.latent_T = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_T = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # U = undetected population that has either self-quarantined or recovered
-        self.latent_U = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_U = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # R = recovered population that has tested positive
-        self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # D = death toll
-        self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions), device=device)
+        self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
 
     def one_step(self, t_initial: int, state_initial: State) -> State:
         dS = self.change_S(state_initial, t_initial)
