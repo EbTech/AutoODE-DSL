@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils import data
 
-State = namedtuple("State", ["S E I T U R D"])
+State = namedtuple("State", list("SEITURD"))
 
 
 class Seiturd(nn.Module):
