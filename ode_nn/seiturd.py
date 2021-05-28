@@ -36,14 +36,13 @@ class Seiturd(nn.Module):
         self.num_days = num_days
         self.num_regions = num_regions
 
-        # TODO: reparametrize rates by exp() to make them positive
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
-        self.decay_E = nn.Parameter(torch.rand(1, device=device) / 10)
+        self.ln_decay_E = nn.Parameter(torch.log(torch.rand(1, device=device)))
         # lambda_I = rate of I -> {T, U} transition
-        self.decay_I = nn.Parameter(torch.rand(1, device=device) / 10)
+        self.ln_decay_I = nn.Parameter(torch.log(torch.rand(1, device=device)))
         # lambda_T = rate of T -> {R, D} transition
-        self.decay_T = nn.Parameter(torch.rand(1, device=device) / 10)
+        self.ln_decay_T = nn.Parameter(torch.log(torch.rand(1, device=device)))
 
         # d_i = detection rate
         self.detection_rate = nn.Parameter(
@@ -79,6 +78,18 @@ class Seiturd(nn.Module):
         self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
         # D = death toll
         self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+
+    @property
+    def decay_E(self) -> torch.Tensor:
+        return torch.exp(self.ln_decay_E)
+
+    @property
+    def decay_I(self) -> torch.Tensor:
+        return torch.exp(self.ln_decay_I)
+
+    @property
+    def decay_T(self) -> torch.Tensor:
+        return torch.exp(self.ln_decay_T)
 
     def one_step(self, t_initial: int, state_initial: State) -> State:
         dS = self.change_S(state_initial, t_initial)
