@@ -1,6 +1,6 @@
 import random
 from collections import namedtuple
-from typing import List, Optional, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,7 +9,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils import data
 
-State = namedtuple("State", list("SEITURD"))
+
+class State(NamedTuple):
+    """
+    The population state of a given Seiturd model.
+    """
+
+    S: torch.Tensor
+    E: torch.Tensor
+    I: torch.Tensor
+    T: torch.Tensor
+    U: torch.Tensor
+    R: torch.Tensor
+    D: torch.Tensor
+
+    @property
+    def N(self) -> torch.Tensor:
+        """Total population"""
+        return self.S + self.E + self.I + self.T + self.U + self.R + self.D
 
 
 class Seiturd(nn.Module):
