@@ -70,21 +70,6 @@ class Seiturd(nn.Module):
         # each susceptible person of state i
         self.connectivity = nn.Parameter(torch.eye(num_regions))
 
-        # S = susceptible population
-        self.latent_S = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # E = exposed population in the non-contagious incubation period
-        self.latent_E = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # I = infected population (contagious but not tested)
-        self.latent_I = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # T = infected population that has tested positive
-        self.latent_T = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # U = undetected population that has either self-quarantined or recovered
-        self.latent_U = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # R = recovered population that has tested positive
-        self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions))
-        # D = death toll
-        self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions))
-
     @property
     def decay_E(self) -> torch.Tensor:
         return torch.exp(self.ln_decay_E)
@@ -127,8 +112,8 @@ class Seiturd(nn.Module):
             states[t - t_initial] = cur_state
         return states
 
-    def forward(self, num_steps):
-        return 0
+    # def loss(self, dataset: C19Dataset, latents: History) -> float:
+    #    return 0
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
@@ -189,3 +174,38 @@ class Seiturd(nn.Module):
 
     def change_D(self, state):
         return self.prob_T_D() * state.T
+
+
+class History:
+    def __init__(self, num_regions: int, num_days: int, device=None):
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # S = susceptible population
+        self.latent_S = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # E = exposed population in the non-contagious incubation period
+        self.latent_E = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # I = infected population (contagious but not tested)
+        self.latent_I = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # T = infected population that has tested positive
+        self.latent_T = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # U = undetected population that has either self-quarantined or recovered
+        self.latent_U = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # R = recovered population that has tested positive
+        self.latent_R = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
+        # D = death toll
+        self.latent_D = nn.Parameter(
+            torch.full((num_days, num_regions), 0.5, device=device)
+        )
