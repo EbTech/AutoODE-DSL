@@ -30,12 +30,13 @@ class Seiturd(nn.Module):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
 
-        super(Seiturd, self).__init__()
+        super().__init__()
 
         num_days, _, num_regions = dataset_shape
         self.num_days = num_days
         self.num_regions = num_regions
 
+        # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
         self.ln_decay_E = nn.Parameter(torch.log(torch.rand(1, device=device)))
