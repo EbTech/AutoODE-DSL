@@ -15,21 +15,17 @@ State = namedtuple("State", list("SEITURD"))
 class Seiturd(nn.Module):
     """
     dataset_shape:
-    device:
     mask_adjacency:
+
+    .. note::
+      To send a `Seiturd` to a device, instantiate it and then do `model.to(device)`.
     """
 
     def __init__(
         self,
         dataset_shape: List[int],
-        device: Optional[torch.device] = None,
         mask_adjacency: bool = True,
     ):
-        # Set up device
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = device
-
         super().__init__()
 
         num_days, _, num_regions = dataset_shape
@@ -39,46 +35,38 @@ class Seiturd(nn.Module):
         # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
-        self.ln_decay_E = nn.Parameter(torch.log(torch.rand(1, device=device)))
+        self.ln_decay_E = nn.Parameter(torch.log(torch.rand(1)))
         # lambda_I = rate of I -> {T, U} transition
-        self.ln_decay_I = nn.Parameter(torch.log(torch.rand(1, device=device)))
+        self.ln_decay_I = nn.Parameter(torch.log(torch.rand(1)))
         # lambda_T = rate of T -> {R, D} transition
-        self.ln_decay_T = nn.Parameter(torch.log(torch.rand(1, device=device)))
+        self.ln_decay_T = nn.Parameter(torch.log(torch.rand(1)))
 
         # d_i = detection rate
-        self.detection_rate = nn.Parameter(
-            torch.rand((num_days, num_regions), device=device) / 10
-        )
+        self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
         # r_{i,t} = recovery rate
-        self.recovery_rate = nn.Parameter(
-            torch.rand((num_days, num_regions), device=device) / 10
-        )
+        self.recovery_rate = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
         # beta_{i,t} = probability of infection per interaction with I person
-        self.contagion_I = nn.Parameter(
-            torch.rand((num_days, num_regions), device=device) / 10
-        )
+        self.contagion_I = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
         # eps_{i,t} = probability of infection per interaction with T person
-        self.contagion_T = nn.Parameter(
-            torch.rand((num_days, num_regions), device=device) / 10
-        )
+        self.contagion_T = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
         # A_{i,j} = percentage of infected people in state j who interact with
         # each susceptible person of state i
-        self.connectivity = nn.Parameter(torch.eye(num_regions, device=device))
+        self.connectivity = nn.Parameter(torch.eye(num_regions))
 
         # S = susceptible population
-        self.latent_S = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_S = nn.Parameter(torch.tensor([0.5] * num_regions))
         # E = exposed population in the non-contagious incubation period
-        self.latent_E = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_E = nn.Parameter(torch.tensor([0.5] * num_regions))
         # I = infected population (contagious but not tested)
-        self.latent_I = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_I = nn.Parameter(torch.tensor([0.5] * num_regions))
         # T = infected population that has tested positive
-        self.latent_T = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_T = nn.Parameter(torch.tensor([0.5] * num_regions))
         # U = undetected population that has either self-quarantined or recovered
-        self.latent_U = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_U = nn.Parameter(torch.tensor([0.5] * num_regions))
         # R = recovered population that has tested positive
-        self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_R = nn.Parameter(torch.tensor([0.5] * num_regions))
         # D = death toll
-        self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions, device=device))
+        self.latent_D = nn.Parameter(torch.tensor([0.5] * num_regions))
 
     @property
     def decay_E(self) -> torch.Tensor:
@@ -128,10 +116,15 @@ class Seiturd(nn.Module):
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
     # state X, to transition into state Y.
-    # The transition graph is S->E->I->T->R/D, with the additional edge I->U.
+    # The transition graph is:
+    #           /->D
+    # S->E->I->T->R
+    #        \->U
+    # Note: I contributes to (U,T) and T contributes to (R,D)
 
     # NOTE: We are currently assuming that people in the T state are not
     # contagious, i.e., eps_{i,t} = 0.
+    # TODO: the mask needs to be defined
     def prob_S_E(self, I_t, t):
         return self.contagion_I[t, :] * (
             torch.mm(self.A, (I_t).reshape(-1, 1)).squeeze(1)
