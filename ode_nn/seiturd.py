@@ -47,8 +47,8 @@ class Seiturd(nn.Module):
     the number of deceased people due to Covid-19 recorded daily.
 
     This class is constructed in a way to allow it to learn from a training
-    set that is a tensor of shape `(n_days, n_populations, n_regions)`,
-    where `n_days` is the number of days for which we have data,
+    set that is a tensor of shape `(num_days, n_populations, n_regions)`,
+    where `num_days` is the number of days for which we have data,
     `n_populations` is the number of populations for which we have data for --
     either two (``T``, ``D``) or three (``T``, ``R``, ``D``) depending on which
     data is used. `n_regions` is the number of geographical regions under
@@ -64,19 +64,27 @@ class Seiturd(nn.Module):
     .. todo: Update the init args
 
     Args:
-      n_days (int): number of days to *train* on
-      n_regions (int): number of geographical regions
+      num_days (int): number of days to *train* on
       adjacency_matrix (torch.Tensor): a square tensor of shape
         `(n_regions, n_regions)`
     """
 
     def __init__(
         self,
-        dataset_shape: List[int],
+        num_days: int,
+        adjacency_matrix: Optional[torch.Tensor] = None,
     ):
+        assert num_days > 0
         super().__init__()
 
-        num_days, _, num_regions = dataset_shape
+        self.adjacency_matrix = adjacency_matrix
+        if adjacency_matrix is None:
+            self.adjacency_matrix = torch.Tensor([[1]])
+
+        assert self.adjacency_matrix.ndim == 2
+        assert self.adjacency_matrix.shape[0] == self.adjacency_matrix.shape[1]
+
+        num_regions = self.adjacency_matrix.shape[0]
         self.num_days = num_days
         self.num_regions = num_regions
 
@@ -171,9 +179,9 @@ class Seiturd(nn.Module):
           amound of ``S`` that changes into ``E``, of shape `(n_regions,)
         """
         # contagion_I is (n_days, num_regions)
-        # A is (n_regions, num_regions)
+        # adjacency_matrix is (n_regions, num_regions)
         # I_t must (num_regions,)
-        return self.contagion_I[t] * (self.A @ I_t)
+        return self.contagion_I[t] * (self.adjacency_matrix @ I_t)
 
     def prob_E_I(self):
         return self.decay_E
