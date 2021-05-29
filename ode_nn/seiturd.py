@@ -59,13 +59,13 @@ class Seiturd(nn.Module):
         self.ln_decay_T = nn.Parameter(torch.log(torch.rand(1)))
 
         # d_i = detection rate
-        self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
+        self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)))
         # r_{i,t} = recovery rate
-        self.recovery_rate = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
+        self.recovery_rate = nn.Parameter(torch.rand((num_days, num_regions)))
         # beta_{i,t} = probability of infection per interaction with I person
-        self.contagion_I = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
+        self.contagion_I = nn.Parameter(torch.rand((num_days, num_regions)))
         # eps_{i,t} = probability of infection per interaction with T person
-        self.contagion_T = nn.Parameter(torch.rand((num_days, num_regions)) / 10)
+        self.contagion_T = nn.Parameter(torch.rand((num_days, num_regions)))
         # A_{i,j} = percentage of infected people in state j who interact with
         # each susceptible person of state i
         self.connectivity = nn.Parameter(torch.eye(num_regions))
@@ -89,7 +89,7 @@ class Seiturd(nn.Module):
         dT = self.change_T(state_initial)
         dU = self.change_U(state_initial)
         dR = self.change_R(state_initial)
-        dD = dR * self.fraction_D(t_initial)
+        dD = self.change_D(state_initial)
 
         new_state = State(
             state_initial.S + dS,
@@ -127,10 +127,22 @@ class Seiturd(nn.Module):
     # NOTE: We are currently assuming that people in the T state are not
     # contagious, i.e., eps_{i,t} = 0.
     # TODO: the mask needs to be defined
-    def prob_S_E(self, I_t, t):
-        return self.contagion_I[t, :] * (
-            torch.mm(self.A, (I_t).reshape(-1, 1)).squeeze(1)
-        )
+    def prob_S_E(self, I_t: torch.Tensor, t: int) -> torch.Tensor:
+        """
+        The fraction of ``S`` that is transformed into ``E``.
+
+        Args:
+          I_t (torch.Tensor): infected population ``I`` at time ``t``,
+            of shape ``(num_regions,)``
+          t (int): time index
+
+        Returns:
+          amound of ``S`` that changes into ``E``, of shape `(n_regions,)
+        """
+        # contagion_I is (n_days, num_regions)
+        # A is (n_regions, num_regions)
+        # I_t must (num_regions,)
+        return self.contagion_I[t] * (self.A @ I_t)
 
     def prob_E_I(self):
         return self.decay_E
