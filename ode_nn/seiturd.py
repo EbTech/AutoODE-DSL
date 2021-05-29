@@ -31,17 +31,48 @@ class State(NamedTuple):
 
 class Seiturd(nn.Module):
     """
-    dataset_shape:
-    mask_adjacency:
+    A model for the Covid-19 pandemic given seven different populations
+    in a compartment model:
+
+    ``S`` - susceptible
+    ``E`` - exposed
+    ``I`` - infected
+    ``T`` - tested
+    ``U`` - undetected
+    ``R`` - recovered
+    ``D`` - deceased
+
+    These populations are broken down so that ``T`` and ``D`` align with
+    the data we can observe, i.e. the number of daily positive tests and
+    the number of deceased people due to Covid-19 recorded daily.
+
+    This class is constructed in a way to allow it to learn from a training
+    set that is a tensor of shape `(n_days, n_populations, n_regions)`,
+    where `n_days` is the number of days for which we have data,
+    `n_populations` is the number of populations for which we have data for --
+    either two (``T``, ``D``) or three (``T``, ``R``, ``D``) depending on which
+    data is used. `n_regions` is the number of geographical regions under
+    consideration
 
     .. note::
-      To send a `Seiturd` to a device, instantiate it and then do `model.to(device)`.
+
+      the number of populations that contribute to the loss are
+      defined in the  loss function used in the ``LitPandemic`` class.
+
+    In order to *predict* populations for new dates... TODO
+
+    .. todo: Update the init args
+
+    Args:
+      n_days (int): number of days to *train* on
+      n_regions (int): number of geographical regions
+      adjacency_matrix (torch.Tensor): a square tensor of shape
+        `(n_regions, n_regions)`
     """
 
     def __init__(
         self,
         dataset_shape: List[int],
-        mask_adjacency: bool = True,
     ):
         super().__init__()
 
