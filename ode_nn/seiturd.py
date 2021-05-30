@@ -151,9 +151,6 @@ class Seiturd(nn.Module):
             states[t - t_initial] = cur_state
         return states
 
-    # def loss(self, dataset: C19Dataset, latents: History) -> float:
-    #    return 0
-
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
     # state X, to transition into state Y.
@@ -165,7 +162,6 @@ class Seiturd(nn.Module):
 
     # NOTE: We are currently assuming that people in the T state are not
     # contagious, i.e., eps_{i,t} = 0.
-    # TODO: the mask needs to be defined
     def prob_S_E(self, I_t: torch.Tensor, t: int) -> torch.Tensor:
         """
         The fraction of ``S`` that is transformed into ``E``.
