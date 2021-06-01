@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 from collections import namedtuple
 from typing import List, NamedTuple, Optional, Tuple, Union
@@ -26,10 +28,65 @@ class State(NamedTuple):
     @property
     def N(self) -> torch.Tensor:
         """Total population"""
-        return self.S + self.E + self.I + self.T + self.U + self.R + self.D
+        return sum(self)
+        # return self.S + self.E + self.I + self.T + self.U + self.R + self.D
+
+    def __add__(self, oth: State) -> State:
+        return State(*[a + b for (a, b) in zip(self, oth)])
 
 
-class Seiturd(nn.Module):
+class History:
+    """
+    Represents the values of the SEITURD subpopulations over a span of ``num_days``.
+
+    A Markov state should be represented as a ``History`` object with ``num_days=1``.
+    This is computationally more efficient than creating a bunch of separate states.
+    """
+
+    def __init__(
+        self,
+        num_regions: int,
+        num_days: int,
+        requires_grad: bool = False,
+        device: Optional[torch.device] = None,
+    ):
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        shp = (num_days, num_regions)
+
+        # S = susceptible population
+        self.S = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+        # E = exposed population in the non-contagious incubation period
+        self.E = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+        # I = infected population (contagious but not tested)
+        self.I = torch.full(  # noqa: E741
+            shp, 0.5, device=device, requires_grad=requires_grad
+        )
+
+        # T = infected population that has tested positive
+        self.T = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+        # U = undetected population that has either self-quarantined or recovered
+        self.U = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+        # R = recovered population that has tested positive
+        self.R = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+        # D = death toll
+        self.D = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+
+    def __getitem__(self, i):
+        return State(*(getattr(self, n)[i] for n in State._fields))
+
+    def __setitem__(self, i, state):
+        for n in State._fields:
+            getattr(self, n)[i] = getattr(state, n)
+
+
+class SeiturdModel(nn.Module):
     """
     A model for the Covid-19 pandemic given seven different populations
     in a compartment model:
@@ -121,43 +178,49 @@ class Seiturd(nn.Module):
     def decay_T(self) -> torch.Tensor:
         return torch.exp(self.ln_decay_T)
 
-    def one_step(self, t_initial: int, state_initial: State) -> State:
-        dS = self.change_S(state_initial, t_initial)
-        dE = self.change_E(state_initial, t_initial)
-        dI = self.change_I(state_initial)
-        dT = self.change_T(state_initial)
-        dU = self.change_U(state_initial)
-        dR = self.change_R(state_initial)
-        dD = self.change_D(state_initial)
-
-        new_state = State(
-            state_initial.S + dS,
-            state_initial.E + dE,
-            state_initial.I + dI,
-            state_initial.T + dT,
-            state_initial.U + dU,
-            state_initial.R + dR,
-            state_initial.D + dD,
+    def run_one_step(self, state: State, t: int) -> State:
+        """
+        Runs the model from ``history``; this model is Markov and
+        therefore only looks at the *last* day of ``history``.
+        """
+        return state + State(
+            *(getattr(self, f"change_{n}")(state, t) for n in State._fields)
         )
-        return new_state
 
-    def many_steps(
-        self, t_initial: int, t_final: int, state_initial: State
-    ) -> List[State]:
-        states = np.empty(t_final - t_initial, dtype=State)
-        cur_state = state_initial  # is this operation free?
-        for t in range(t_initial, t_final):
-            cur_state = self.one_step(t_initial, cur_state)
-            states[t - t_initial] = cur_state
-        return states
+    def run_forward(
+        self,
+        initial_state: State,
+        initial_t: int,
+        num_days: int,
+        requires_grad: bool = False,
+    ) -> History:
+        """
+        Walk the model forward from ``initial_state``.
+
+        Returns a new ``History`` object, covering days ``initial_t + 1``,
+        ..., ``initial_t + num_days``.
+
+        (The new history uses the same device as ``initial_state``;
+        ``requires_grad`` is passed along.)
+        """
+        future = History(
+            self.num_regions,
+            num_days,
+            requires_grad=requires_grad,
+            device=initial_state.S.device,
+        )
+
+        curr_state = initial_state
+        for i in range(num_days):
+            curr_state = future[i] = self.run_one_step(curr_state, initial_t + i + 1)
+        return future
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
     # state X, to transition into state Y.
     # The transition graph is:
-    #           /->D
     # S->E->I->T->R
-    #        \->U
+    #        \->U  \->D
     # Note: I contributes to (U,T) and T contributes to (R,D)
 
     # NOTE: We are currently assuming that people in the T state are not
@@ -207,52 +270,17 @@ class Seiturd(nn.Module):
     def change_E(self, state, t):
         return self.prob_S_E(state.I, t) * state.S - self.prob_E_I() * state.E
 
-    def change_I(self, state):
+    def change_I(self, state, t):  # ignores t
         return self.prob_E_I() * state.E - self.prob_I_out() * state.I
 
-    def change_T(self, state):
+    def change_T(self, state, t):  # ignores t
         return self.prob_I_T() * state.I - self.prob_T_out() * state.T
 
-    def change_U(self, state):
+    def change_U(self, state, t):  # ignores t
         return self.prob_I_U() * state.I
 
-    def change_R(self, state):
+    def change_R(self, state, t):  # ignores t
         return self.prob_T_R() * state.T
 
-    def change_D(self, state):
+    def change_D(self, state, t):  # ignores t
         return self.prob_T_D() * state.T
-
-
-class History:
-    def __init__(self, num_regions: int, num_days: int, device=None):
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # S = susceptible population
-        self.latent_S = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # E = exposed population in the non-contagious incubation period
-        self.latent_E = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # I = infected population (contagious but not tested)
-        self.latent_I = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # T = infected population that has tested positive
-        self.latent_T = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # U = undetected population that has either self-quarantined or recovered
-        self.latent_U = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # R = recovered population that has tested positive
-        self.latent_R = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
-        # D = death toll
-        self.latent_D = nn.Parameter(
-            torch.full((num_days, num_regions), 0.5, device=device)
-        )
