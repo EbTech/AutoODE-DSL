@@ -29,7 +29,6 @@ class State(NamedTuple):
     def N(self) -> torch.Tensor:
         """Total population"""
         return sum(self)
-        # return self.S + self.E + self.I + self.T + self.U + self.R + self.D
 
     def __add__(self, oth: State) -> State:
         return State(*[a + b for (a, b) in zip(self, oth)])
@@ -248,20 +247,20 @@ class SeiturdModel(nn.Module):
     def prob_I_out(self):  # I->T or I->U
         return self.decay_I
 
-    def prob_I_T(self):
-        return self.detection_rate * self.prob_I_out()
+    def prob_I_T(self, t: int):
+        return self.detection_rate[t] * self.prob_I_out()
 
-    def prob_I_U(self):
-        return (1 - self.detection_rate) * self.prob_I_out()
+    def prob_I_U(self, t: int):
+        return (1 - self.detection_rate[t]) * self.prob_I_out()
 
     def prob_T_out(self):  # T->R or T->D
         return self.decay_T
 
-    def prob_T_R(self):
-        return self.recovery_rate * self.prob_T_out()
+    def prob_T_R(self, t: int):
+        return self.recovery_rate[t] * self.prob_T_out()
 
-    def prob_T_D(self):
-        return (1.0 - self.recovery_rate) * self.prob_T_out()
+    def prob_T_D(self, t: int):
+        return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
 
     # Net population change
     def change_S(self, state, t):
@@ -273,14 +272,14 @@ class SeiturdModel(nn.Module):
     def change_I(self, state, t):  # ignores t
         return self.prob_E_I() * state.E - self.prob_I_out() * state.I
 
-    def change_T(self, state, t):  # ignores t
-        return self.prob_I_T() * state.I - self.prob_T_out() * state.T
+    def change_T(self, state, t: int):
+        return self.prob_I_T(t) * state.I - self.prob_T_out() * state.T
 
-    def change_U(self, state, t):  # ignores t
-        return self.prob_I_U() * state.I
+    def change_U(self, state, t: int):
+        return self.prob_I_U(t) * state.I
 
-    def change_R(self, state, t):  # ignores t
-        return self.prob_T_R() * state.T
+    def change_R(self, state, t: int):
+        return self.prob_T_R(t) * state.T
 
-    def change_D(self, state, t):  # ignores t
-        return self.prob_T_D() * state.T
+    def change_D(self, state, t: int):
+        return self.prob_T_D(t) * state.T

@@ -39,3 +39,12 @@ class SeiturdTest(TestCase):
         for pop_name in list("SEITURD"):
             # Check that there was a change
             assert (getattr(new_state, pop_name) != getattr(state, pop_name)).all()
+
+    def test_run_forward(self):
+        n_regions = 50
+        A = torch.rand((n_regions, n_regions))
+        state = State(*torch.rand(7, n_regions))
+        model = SeiturdModel(365, A)
+        n_days = 10
+        hist = model.run_forward(state, 0, n_days)
+        assert hist.S.shape == (n_days, n_regions)
