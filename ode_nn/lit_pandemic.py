@@ -32,7 +32,8 @@ class LitPandemic(pl.LightningModule):
 
     def forward(self, x: torch.Tensor):
         """Aliases to :meth:`model.forward`. Unused."""
-        return self.model(x)
+        # TODO - call run_forward properly
+        return self.model.run_forward(x)
 
     def training_step(
         self, batch: Tuple[torch.Tensor, ...], batch_idx: int

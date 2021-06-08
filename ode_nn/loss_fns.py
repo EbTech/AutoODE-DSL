@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from ode_nn.seiturd import History
+
 
 class LossFn(ABC):
     """
@@ -13,5 +15,21 @@ class LossFn(ABC):
     """
 
     @abstractmethod
-    def __call__(self, batch, y_hat: torch.tensor, model: torch.nn.Module):
+    def __call__(
+        self, true_history: torch.Tensor, pred_history: History, model: torch.nn.Module
+    ):
         pass  # pragma: no cover
+
+
+class C19MSELoss(LossFn):
+    mse = torch.nn.MSELoss()
+
+    def __call__(
+        self, true_history: torch.Tensor, pred_history: History, model: torch.nn.Module
+    ):
+        T = true_history[:, 0]
+        D = true_history[:, 2]
+        T_hat = pred_history.T
+        D_hat = pred_history.D
+
+        return self.mse(T, T_hat) + self.mse(D, D_hat)
