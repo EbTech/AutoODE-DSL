@@ -11,19 +11,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils import data
 
+from .data import C19Dataset
+
 
 class State(NamedTuple):
     """
     The population state of a given Seiturd model.
+
+    Each attribute should be size [n_regions].
     """
 
-    S: torch.Tensor
-    E: torch.Tensor
-    I: torch.Tensor
-    T: torch.Tensor
-    U: torch.Tensor
-    R: torch.Tensor
-    D: torch.Tensor
+    S: torch.Tensor  # susceptible population
+    E: torch.Tensor  # exposed population in the non-contagious incubation period
+    I: torch.Tensor  # infected population (contagious but not tested)
+    T: torch.Tensor  # infected population that has tested positive
+    U: torch.Tensor  # undetected population, either self-quarantined or recovered
+    R: torch.Tensor  # recovered population that has tested positive
+    D: torch.Tensor  # death toll
 
     @property
     def N(self) -> torch.Tensor:
@@ -38,13 +42,43 @@ class History:
     """
     Represents the values of the SEITURD subpopulations over a span of ``num_days``.
 
-    A Markov state should be represented as a ``History`` object with ``num_days=1``.
     This is computationally more efficient than creating a bunch of separate states.
+
+    The S state is implicit (S = N - E - I - T - U - R - D); this choice *does*
+    affect the gradient descent direction slightly, but seems unlikely
+    that would really matter.
     """
+
+    # Let f(x,y) = F(x,y,1-x-y). Then,
+    # df/dx = dF/dx - dF/dz,
+    # df/dy = dF/dy - dF/dz.
+    # Effectively, a gradient step does:
+    # x/step += dF/dx - dF/dz,
+    # y/step += dF/dy - dF/dz,
+    # z/step += 2*dF/dz - dF/dx - dF/dy.
+    #
+    # Hmmm I suppose the asymmetry comes from the fact that we're using
+    # (e_x-e_z, e_y-e_z) as our basis for the tangent space of the constraint
+    # manifold (i.e., the plane x+y+z=1). If we want to interpret the gradient
+    # as being the direction of greatest improvement, the basis should be
+    # orthonormal! E.g., taking the vector (1,1,-2) and rotating +/-45 degrees
+    # within the plane x+y+z=1 yields the orthogonal basis
+    # ((a+1)e_x + (a-1)e_y, (a-1)e_x + (a+1)e_y), where a = 1/sqrt(3).
+    # In higher dimensions, the rotation angle is arccos(1/sqrt(N-1)).
+
+    fields = State._fields
+    # could avoid hardcoding these, not bothering for now
+    S = property(lambda self: self.N.unsqueeze(0) - self.data.sum(0))
+    E = property(lambda self: self.data[0])
+    II = property(lambda self: self.data[1])
+    T = property(lambda self: self.data[2])
+    U = property(lambda self: self.data[3])
+    R = property(lambda self: self.data[4])
+    D = property(lambda self: self.data[5])
 
     def __init__(
         self,
-        num_regions: int,
+        N: torch.Tensor,  # shape [num_regions]
         num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
@@ -52,37 +86,36 @@ class History:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        shp = (num_days, num_regions)
+        (num_regions,) = N.shape
+        self.N = torch.as_tensor(N, device=device)
 
-        # S = susceptible population
-        self.S = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
-
-        # E = exposed population in the non-contagious incubation period
-        self.E = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
-
-        # I = infected population (contagious but not tested)
-        self.I = torch.full(  # noqa: E741
-            shp, 0.5, device=device, requires_grad=requires_grad
+        self.data = torch.full(
+            (len(self.fields) - 1, num_days, num_regions),
+            0,
+            device=device,
+            requires_grad=requires_grad,
         )
 
-        # T = infected population that has tested positive
-        self.T = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+    @classmethod
+    def from_dataset(cls, dataset: C19Dataset, **kwargs):
+        """N = dataset.meta.pop_2018.loc[dataset.state_names]
+        history = cls(N=N, num_days=len(dataset), **kwargs)
+        daily_confirmed_cases = dataset.tensor[
+            :, 0, :
+        ]  # needs to be cumsum minus transitions out
+        daily_deaths = dataset.tensor[:, -1, :]  # needs to be cumsum
+        """
 
-        # U = undetected population that has either self-quarantined or recovered
-        self.U = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
+    def __getitem__(self, i: int):
+        return State(*(getattr(self, n)[i] for n in self.fields))
 
-        # R = recovered population that has tested positive
-        self.R = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
-
-        # D = death toll
-        self.D = torch.full(shp, 0.5, device=device, requires_grad=requires_grad)
-
-    def __getitem__(self, i):
-        return State(*(getattr(self, n)[i] for n in State._fields))
-
-    def __setitem__(self, i, state):
-        for n in State._fields:
-            getattr(self, n)[i] = getattr(state, n)
+    def __setitem__(self, i: int, state: State, check_consistency: bool = False):
+        if check_consistency:
+            assert torch.equal(state.N, self.N)
+        for name, state_val in zip(State._fields, state):
+            if name == "S":
+                continue
+            getattr(self, name)[i] = state_val
 
 
 class SeiturdModel(nn.Module):
