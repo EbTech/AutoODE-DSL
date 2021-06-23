@@ -28,6 +28,11 @@ class C19Dataset(torch.utils.data.Dataset):
     dataframe accessible as the :attr:`df` attribute and a torch tensor
     accessible as the :attr:`tensor` attribute.
 
+    :attr:`tensor` is of shape (num_days, 3, num_regions).
+
+    Regions (i.e. states + DC + PR) are always in alphabetical order
+    (by :attr:`state_names`, *not* by abbreviation).
+
     Args:
       datapath (Optional[Union[str, Path]]): default ``None``. Path to the
         location of the daily reports. If ``None`` it defaults to the location
@@ -79,6 +84,10 @@ class C19Dataset(torch.utils.data.Dataset):
             n for k, n in self.df.columns[: len(self.df.columns) // 3]
         ]
         assert [n for k, n in self.df.columns] == self.state_names * 3
+
+        self.pop_2018: torch.Tensor = torch.as_tensor(
+            self.meta.set_index("name").pop_2018.loc[self.state_names]
+        )
 
         self.tensor: torch.Tensor = torch.tensor(
             self.df.to_numpy().reshape(len(self.df), 3, -1)

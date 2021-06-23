@@ -73,7 +73,7 @@ class History:
     def __init__(
         self,
         N: torch.Tensor,  # total pop, shape [num_regions]
-        num_pos_and_alive: torch.Tensor,  # T + R, shape [num_regions, num_days]
+        num_pos_and_alive: torch.Tensor,  # T + R, shape [num_days, num_regions]
         # num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
@@ -83,12 +83,12 @@ class History:
 
         self.N = torch.as_tensor(N, device=device)
         self.num_pos_and_alive = torch.as_tensor(num_pos_and_alive, device=device)
-        (num_regions, num_days) = self.num_pos_and_alive.shape
-        assert self.N.shape == (num_regions,)
+        (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
+        assert self.N.shape == (self.num_regions,)
 
         self.data = torch.full(
-            (len(self.fields) - 2, num_days, num_regions),
-            0,
+            (len(self.fields) - 2, self.num_days, self.num_regions),
+            0.0,
             device=device,
             requires_grad=requires_grad,
         )
@@ -114,13 +114,11 @@ class History:
 
     @classmethod
     def from_dataset(cls, dataset: C19Dataset, **kwargs):
-        N = dataset.meta.pop_2018.loc[dataset.state_names]
-
-        TRD = torch.cumsum(dataset.tensor[:, 0, :], 0).t()
-        D = torch.cumsum(dataset.tensor[:, -1, :], 0).t()
+        TRD = dataset.tensor[:, 0, :]
+        D = dataset.tensor[:, -1, :]
         TR = TRD - D
 
-        history = cls(N=N, num_pos_and_alive=TR, **kwargs)
+        history = cls(N=dataset.pop_2018, num_pos_and_alive=TR, **kwargs)
         history.D[:] = D
         return history
 
@@ -138,6 +136,12 @@ class History:
 
     def __len__(self):
         return len(self.fields)
+
+    def __repr__(self):
+        return (
+            f"<{type(self).__qualname__} object "
+            f"({self.num_days} days, {self.num_regions} regions)>"
+        )
 
 
 class SeiturdModel(nn.Module):
