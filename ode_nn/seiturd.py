@@ -47,6 +47,8 @@ class History:
     The S state is implicit (S = N - E - I - T - U - R - D); this choice *does*
     affect the gradient descent direction slightly, but seems unlikely
     that would really matter.
+
+    The R state is also implicit (R = num_pos_and_alive - T).
     """
 
     # Let f(x,y) = F(x,y,1-x-y). Then,
@@ -66,45 +68,61 @@ class History:
     # ((a+1)e_x + (a-1)e_y, (a-1)e_x + (a+1)e_y), where a = 1/sqrt(3).
     # In higher dimensions, the rotation angle is arccos(1/sqrt(N-1)).
 
-    fields = State._fields
-    # could avoid hardcoding these, not bothering for now
-    S = property(lambda self: self.N.unsqueeze(0) - self.data.sum(0))
-    E = property(lambda self: self.data[0])
-    II = property(lambda self: self.data[1])
-    T = property(lambda self: self.data[2])
-    U = property(lambda self: self.data[3])
-    R = property(lambda self: self.data[4])
-    D = property(lambda self: self.data[5])
+    fields = "SEITURD"  # could avoid hardcoding these, not bothering for now
 
     def __init__(
         self,
-        N: torch.Tensor,  # shape [num_regions]
-        num_days: int,
+        N: torch.Tensor,  # total pop, shape [num_regions]
+        num_pos_and_alive: torch.Tensor,  # T + R, shape [num_regions, num_days]
+        # num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
     ):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        (num_regions,) = N.shape
         self.N = torch.as_tensor(N, device=device)
+        self.num_pos_and_alive = torch.as_tensor(num_pos_and_alive, device=device)
+        (num_regions, num_days) = self.num_pos_and_alive.shape
+        assert self.N.shape == (num_regions,)
 
         self.data = torch.full(
-            (len(self.fields) - 1, num_days, num_regions),
+            (len(self.fields) - 2, num_days, num_regions),
             0,
             device=device,
             requires_grad=requires_grad,
         )
 
+    # S is implicit to make things sum to N (below)
+    E = property(lambda self: self.data[0])
+    I = property(lambda self: self.data[1])  # noqa: E741
+    T = property(lambda self: self.data[2])
+    U = property(lambda self: self.data[3])
+    R = property(lambda self: self.num_pos_and_alive - self.T)  # implicit...
+    D = property(lambda self: self.data[4])
+
+    @property
+    def S(self):
+        return (
+            self.N.unsqueeze(0)
+            - self.num_pos_and_alive
+            - self.E
+            - self.I
+            - self.U
+            - self.D
+        )
+
     @classmethod
     def from_dataset(cls, dataset: C19Dataset, **kwargs):
-        """N = dataset.meta.pop_2018.loc[dataset.state_names]
-        history = cls(N=N, num_days=len(dataset), **kwargs)
-        daily_confirmed_cases = dataset.tensor[
-            :, 0, :
-        ]  # needs to be cumsum minus transitions out
-        daily_deaths = dataset.tensor[:, -1, :]  # needs to be cumsum
-        """
+        N = dataset.meta.pop_2018.loc[dataset.state_names]
+
+        TRD = torch.cumsum(dataset.tensor[:, 0, :], 0).t()
+        D = torch.cumsum(dataset.tensor[:, -1, :], 0).t()
+        TR = TRD - D
+
+        history = cls(N=N, num_pos_and_alive=TR, **kwargs)
+        history.D[:] = D
+        return history
 
     def __getitem__(self, i: int):
         return State(*(getattr(self, n)[i] for n in self.fields))
@@ -112,10 +130,14 @@ class History:
     def __setitem__(self, i: int, state: State, check_consistency: bool = False):
         if check_consistency:
             assert torch.equal(state.N, self.N)
+            assert torch.equal(state.T + state.R, self.num_pos_and_alive)
         for name, state_val in zip(State._fields, state):
-            if name == "S":
+            if name in "SR":
                 continue
             getattr(self, name)[i] = state_val
+
+    def __len__(self):
+        return len(self.fields)
 
 
 class SeiturdModel(nn.Module):
@@ -251,8 +273,9 @@ class SeiturdModel(nn.Module):
     # state. prob_X_Y gives the probability for a member of the population at
     # state X, to transition into state Y.
     # The transition graph is:
+    #           /->D
     # S->E->I->T->R
-    #        \->U  \->D
+    #        \->U
     # Note: I contributes to (U,T) and T contributes to (R,D)
 
     # NOTE: We are currently assuming that people in the T state are not
