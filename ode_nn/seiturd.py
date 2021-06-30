@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import MultivariateNormal
 from torch.utils import data
 
 from .data import C19Dataset
@@ -303,7 +304,7 @@ class SeiturdModel(nn.Module):
     #         curr_state = future[i] = self.run_one_step(curr_state, initial_t + i + 1)
     #     return future
 
-    def logp(self, history: History) -> float:
+    def log_prob(self, history: History) -> float:
         assert self.num_days == len(history)
 
         total = 0
@@ -311,11 +312,27 @@ class SeiturdModel(nn.Module):
             old = history[t]
             new = history[t + 1]
             flows = old.get_flows(new)
-            total += self.flow_logp(flows, old, t)
+            total += self.flow_log_prob(flows, old, t)
         return total
 
-    def flow_logp(self, flows: Flows, state: State, t: int) -> float:
-        pass  # TODO
+    def flow_log_prob(self, flows: Flows, state: State, t: int) -> float:
+        logp = 0
+
+        # TODO: these and the flow_from_* functions should be made generic,
+        # by keeping a dictionary or something of what the flows are
+        S_dist = MultivariateNormal(*self.flow_from_S(state, t))
+        logp += S_dist.log_prob(torch.stack((flows.S_E,)))
+
+        E_dist = MultivariateNormal(*self.flow_from_E(state, t))
+        logp += E_dist.log_prob(torch.stack((flows.E_I,)))
+
+        I_dist = MultivariateNormal(*self.flow_from_I(state, t))
+        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U)))
+
+        T_dist = MultivariateNormal(*self.flow_from_T(state, t))
+        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D)))
+
+        return logp
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
@@ -366,33 +383,37 @@ class SeiturdModel(nn.Module):
     def prob_T_D(self, t: int) -> torch.Tensor:
         return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
 
-    # Net population change
-    def flow_from_S(self, state: State, t: int) -> (List[float], List[List[float]]):
+    # Distributions of population flows
+    def flow_from_S(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
         p = [self.prob_S_E(state.I, t)]
         return flow_multinomial(state.S, p)
 
-    # t is not used
-    def flow_from_E(self, state: State, t: int) -> (List[float], List[List[float]]):
+    def flow_from_E(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
+        # t is not used
         p = [self.prob_E_I()]
         return flow_multinomial(state.E, p)
 
-    def flow_from_I(self, state: State, t: int) -> (List[float], List[List[float]]):
+    def flow_from_I(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
         p = [self.prob_I_T(t), self.prob_I_U(t)]
         return flow_multinomial(state.I, p)
 
-    def flow_from_T(self, state: State, t: int) -> (List[float], List[List[float]]):
+    def flow_from_T(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
         p = [self.prob_T_R(t), self.prob_T_D(t)]
         return flow_multinomial(state.T, p)
 
 
-# Computes mean and covariance of a multinomial with p >= 0, sum(p) <= 1.
-def flow_multinomial(n: int, p: List[float]) -> (List[float], List[List[float]]):
-    dim = len(p)
-    mean = [None] * dim
-    covar = [[None] * dim] * dim
-    for i in range(dim):
-        mean[i] = n * p[i]
-        covar[i][i] = n * p[i] * (1 - p[i])
-        for j in range(i):
-            covar[j][i] = covar[i][j] = -n * p[i] * p[j]
-    return (mean, covar)
+def flow_multinomial(n: int, p: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+    """
+    Computes mean and covariance of a multinomial.
+
+    Arguments:
+      - n, number of trials, of shape [n_regions]
+      - p, probabilities, of shape [n_regions, n_outs].
+        p should be nonnegative, and sum to at most 1.
+    Returns:
+      - mean of shape [n_regions, n_outs]
+      - cov of shape [n_regions, n_outs, n_outs]
+    """
+    mean = n * p
+    cov = torch.diag_embed(mean) - n * p[:, :, np.newaxis] * p[:, np.newaxis, :]
+    return mean, cov
