@@ -321,16 +321,16 @@ class SeiturdModel(nn.Module):
         # TODO: these and the flow_from_* functions should be made generic,
         # by keeping a dictionary or something of what the flows are
         S_dist = MultivariateNormal(*self.flow_from_S(state, t))
-        logp += S_dist.log_prob(torch.stack((flows.S_E,)))
+        logp += S_dist.log_prob(flows.S_E.unsqueeze(1))
 
         E_dist = MultivariateNormal(*self.flow_from_E(state, t))
-        logp += E_dist.log_prob(torch.stack((flows.E_I,)))
+        logp += E_dist.log_prob(flows.E_I.unsqueeze(1))
 
         I_dist = MultivariateNormal(*self.flow_from_I(state, t))
-        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U)))
+        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U), 1))
 
         T_dist = MultivariateNormal(*self.flow_from_T(state, t))
-        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D)))
+        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D), 1))
 
         return logp
 
