@@ -368,23 +368,21 @@ class SeiturdModel(nn.Module):
 
     # Net population change
     def flow_from_S(self, state: State, t: int) -> (List[float], List[List[float]]):
-        p_SE = self.prob_S_E(state.I, t)
-        return flow_multinomial(state.S, [p_SE])
+        p = [self.prob_S_E(state.I, t)]
+        return flow_multinomial(state.S, p)
 
     # t is not used
     def flow_from_E(self, state: State, t: int) -> (List[float], List[List[float]]):
-        p_EI = self.prob_E_I()
-        return flow_multinomial(state.E, [p_EI])
+        p = [self.prob_E_I()]
+        return flow_multinomial(state.E, p)
 
     def flow_from_I(self, state: State, t: int) -> (List[float], List[List[float]]):
-        p_IT = self.prob_I_T(t)
-        p_IU = self.prob_I_U(t)
-        return flow_multinomial(state.I, [p_IT, p_IU])
+        p = [self.prob_I_T(t), self.prob_I_U(t)]
+        return flow_multinomial(state.I, p)
 
     def flow_from_T(self, state: State, t: int) -> (List[float], List[List[float]]):
-        p_TR = self.prob_T_R(t)
-        p_TD = self.prob_T_D(t)
-        return flow_multinomial(state.T, [p_TR, p_TD])
+        p = [self.prob_T_R(t), self.prob_T_D(t)]
+        return flow_multinomial(state.T, p)
 
 
 # Computes mean and covariance of a multinomial with p >= 0, sum(p) <= 1.
