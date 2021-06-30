@@ -315,7 +315,7 @@ class SeiturdModel(nn.Module):
         return total
 
     def flow_logp(self, flows: Flows, state: State, t: int) -> float:
-        pass
+        pass  # TODO
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
