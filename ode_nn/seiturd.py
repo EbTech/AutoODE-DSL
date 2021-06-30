@@ -34,8 +34,35 @@ class State(NamedTuple):
         """Total population"""
         return sum(self)
 
-    def __add__(self, oth: State) -> State:
-        return State(*[a + b for (a, b) in zip(self, oth)])
+    def __add__(self, other: State) -> State:
+        return State(*[a + b for (a, b) in zip(self, other)])
+
+    def __sub__(self, other: State) -> State:
+        return State(*[a - b for (a, b) in zip(self, other)])
+
+    # As the transition model is a tree, flows are uniquely determined by delta,
+    # since both have one fewer degree of freedom than the number of states.
+    # To infer flows, proceed by eliminating one leaf at a time.
+    def flows_to(self, other: State) -> Flows:
+        delta = other - self
+
+        T_D = delta.D
+        T_R = delta.R
+        I_U = delta.U
+        I_T = delta.T + T_D + T_R  # other.T == self.T - T_D - T_R + I_T
+        E_I = delta.I + I_T + I_U  # other.I == self.I - I_T - I_U + E_I
+        S_E = delta.E + E_I  # other.E == self.E - E_I + S_E
+
+        return Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
+
+
+class Flows(NamedTuple):
+    S_E: torch.Tensor
+    E_I: torch.Tensor
+    I_T: torch.Tensor
+    I_U: torch.Tensor
+    T_R: torch.Tensor
+    T_D: torch.Tensor
 
 
 class History:
@@ -236,42 +263,59 @@ class SeiturdModel(nn.Module):
     def decay_T(self) -> torch.Tensor:
         return torch.exp(self.ln_decay_T)
 
-    def run_one_step(self, state: State, t: int) -> State:
-        """
-        Runs the model from ``history``; this model is Markov and
-        therefore only looks at the *last* day of ``history``.
-        """
-        return state + State(
-            *(getattr(self, f"change_{n}")(state, t) for n in State._fields)
-        )
+    # run_one_step and run_forward are broken now, because we removed the
+    # change functions....
 
-    def run_forward(
-        self,
-        initial_state: State,
-        initial_t: int,
-        num_days: int,
-        requires_grad: bool = False,
-    ) -> History:
-        """
-        Walk the model forward from ``initial_state``.
+    # def run_one_step(self, state: State, t: int) -> State:
+    #     """
+    #     Runs the model from ``history``; this model is Markov and
+    #     therefore only looks at the *last* day of ``history``.
+    #     """
+    #     return state + State(
+    #         *(getattr(self, f"change_{n}")(state, t) for n in State._fields)
+    #     )
+    #
+    # def run_forward(
+    #     self,
+    #     initial_state: State,
+    #     initial_t: int,
+    #     num_days: int,
+    #     requires_grad: bool = False,
+    # ) -> History:
+    #     """
+    #     Walk the model forward from ``initial_state``.
+    #
+    #     Returns a new ``History`` object, covering days ``initial_t + 1``,
+    #     ..., ``initial_t + num_days``.
+    #
+    #     (The new history uses the same device as ``initial_state``;
+    #     ``requires_grad`` is passed along.)
+    #     """
+    #     future = History(
+    #         self.num_regions,
+    #         num_days,
+    #         requires_grad=requires_grad,
+    #         device=initial_state.S.device,
+    #     )
+    #
+    #     curr_state = initial_state
+    #     for i in range(num_days):
+    #         curr_state = future[i] = self.run_one_step(curr_state, initial_t + i + 1)
+    #     return future
 
-        Returns a new ``History`` object, covering days ``initial_t + 1``,
-        ..., ``initial_t + num_days``.
+    def logp(self, history: History) -> float:
+        assert self.num_days == len(history)
 
-        (The new history uses the same device as ``initial_state``;
-        ``requires_grad`` is passed along.)
-        """
-        future = History(
-            self.num_regions,
-            num_days,
-            requires_grad=requires_grad,
-            device=initial_state.S.device,
-        )
+        total = 0
+        for t in range(len(history) - 1):
+            old = history[t]
+            new = history[t + 1]
+            flows = old.get_flows(new)
+            total += self.flow_logp(flows, old, t)
+        return total
 
-        curr_state = initial_state
-        for i in range(num_days):
-            curr_state = future[i] = self.run_one_step(curr_state, initial_t + i + 1)
-        return future
+    def flow_logp(self, flows: Flows, state: State, t: int) -> float:
+        pass
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
@@ -294,52 +338,63 @@ class SeiturdModel(nn.Module):
           t (int): time index
 
         Returns:
-          amound of ``S`` that changes into ``E``, of shape `(n_regions,)
+          amount of ``S`` that changes into ``E``, of shape `(n_regions,)
         """
         # contagion_I is (n_days, num_regions)
         # adjacency_matrix is (n_regions, num_regions)
         # I_t must (num_regions,)
         return self.contagion_I[t] * (self.adjacency_matrix @ I_t)
 
-    def prob_E_I(self):
+    def prob_E_I(self) -> torch.Tensor:
         return self.decay_E
 
-    def prob_I_out(self):  # I->T or I->U
+    def prob_I_out(self) -> torch.Tensor:  # I->T or I->U
         return self.decay_I
 
-    def prob_I_T(self, t: int):
+    def prob_I_T(self, t: int) -> torch.Tensor:
         return self.detection_rate[t] * self.prob_I_out()
 
-    def prob_I_U(self, t: int):
+    def prob_I_U(self, t: int) -> torch.Tensor:
         return (1 - self.detection_rate[t]) * self.prob_I_out()
 
-    def prob_T_out(self):  # T->R or T->D
+    def prob_T_out(self) -> torch.Tensor:  # T->R or T->D
         return self.decay_T
 
-    def prob_T_R(self, t: int):
+    def prob_T_R(self, t: int) -> torch.Tensor:
         return self.recovery_rate[t] * self.prob_T_out()
 
-    def prob_T_D(self, t: int):
+    def prob_T_D(self, t: int) -> torch.Tensor:
         return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
 
     # Net population change
-    def change_S(self, state, t):
-        return -self.prob_S_E(state.I, t) * state.S
+    def flow_from_S(self, state: State, t: int) -> (List[float], List[List[float]]):
+        p_SE = self.prob_S_E(state.I, t)
+        return flow_multinomial(state.S, [p_SE])
 
-    def change_E(self, state, t):
-        return self.prob_S_E(state.I, t) * state.S - self.prob_E_I() * state.E
+    # t is not used
+    def flow_from_E(self, state: State, t: int) -> (List[float], List[List[float]]):
+        p_EI = self.prob_E_I()
+        return flow_multinomial(state.E, [p_EI])
 
-    def change_I(self, state, t):  # ignores t
-        return self.prob_E_I() * state.E - self.prob_I_out() * state.I
+    def flow_from_I(self, state: State, t: int) -> (List[float], List[List[float]]):
+        p_IT = self.prob_I_T(t)
+        p_IU = self.prob_I_U(t)
+        return flow_multinomial(state.I, [p_IT, p_IU])
 
-    def change_T(self, state, t: int):
-        return self.prob_I_T(t) * state.I - self.prob_T_out() * state.T
+    def flow_from_T(self, state: State, t: int) -> (List[float], List[List[float]]):
+        p_TR = self.prob_T_R(t)
+        p_TD = self.prob_T_D(t)
+        return flow_multinomial(state.T, [p_TR, p_TD])
 
-    def change_U(self, state, t: int):
-        return self.prob_I_U(t) * state.I
 
-    def change_R(self, state, t: int):
-        return self.prob_T_R(t) * state.T
-
-    def change_D(self, state, t: int):
-        return self.prob_T_D(t) * state.T
+# Computes mean and covariance of a multinomial with p >= 0, sum(p) <= 1.
+def flow_multinomial(n: int, p: List[float]) -> (List[float], List[List[float]]):
+    dim = len(p)
+    mean = [None] * dim
+    covar = [[None] * dim] * dim
+    for i in range(dim):
+        mean[i] = n * p[i]
+        covar[i][i] = n * p[i] * (1 - p[i])
+        for j in range(i):
+            covar[j][i] = covar[i][j] = -n * p[i] * p[j]
+    return (mean, covar)
