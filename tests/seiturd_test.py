@@ -31,9 +31,10 @@ class SeiturdTest(TestCase):
         assert pS.shape == I_t.shape
 
     def test_log_prob(self):
-        ds = C19Dataset()[:3]  # 3 days only for speed
-        A = ds.adjacency_matrix
-        model = SeiturdModel(3, A)
+        ds = C19Dataset()
+        A = ds.adjacency
+        history = History.from_dataset(ds)
+        model = SeiturdModel(history.num_days, A)
         history = History.from_dataset(ds)
         log_prob = model.log_prob(history)
         assert isinstance(log_prob, torch.Tensor)
