@@ -114,6 +114,8 @@ class History:
         self.num_pos_and_alive = torch.as_tensor(num_pos_and_alive, device=device)
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
+        self.num_dead = num_dead
+        assert num_dead.shape == (self.num_days, self.num_regions)
 
         # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
         # constraints equals 4 states to fit
@@ -307,13 +309,13 @@ class SeiturdModel(nn.Module):
     #     return future
 
     def log_prob(self, history: History) -> float:
-        assert self.num_days == len(history)
+        assert self.num_days == history.num_days
 
         total = 0
         for t in range(len(history) - 1):
             old = history[t]
             new = history[t + 1]
-            flows = old.get_flows(new)
+            flows = old.flows_to(new)
             total += self.flow_log_prob(flows, old, t)
         return total
 
