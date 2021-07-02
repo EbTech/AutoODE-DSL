@@ -3,7 +3,8 @@ from unittest import TestCase
 import pytest
 import torch
 
-from ode_nn.seiturd import SeiturdModel, State
+from ode_nn.data import C19Dataset
+from ode_nn.seiturd import History, SeiturdModel, State
 
 
 class SeiturdTest(TestCase):
@@ -30,7 +31,11 @@ class SeiturdTest(TestCase):
         assert pS.shape == I_t.shape
 
     def test_log_prob(self):
-        assert False
-
-    def test_flow_log_prob(Self):
-        assert False
+        ds = C19Dataset()[:3]  # 3 days only for speed
+        A = ds.adjacency_matrix
+        model = SeiturdModel(3, A)
+        history = History.from_dataset(ds)
+        log_prob = model.log_prob(history)
+        assert isinstance(log_prob, torch.Tensor)
+        assert log_prob.dtype is torch.float
+        assert log_prob.requires_grad  # means we can call log_prob.backward()
