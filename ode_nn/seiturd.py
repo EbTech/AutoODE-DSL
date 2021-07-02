@@ -418,6 +418,7 @@ def flow_multinomial(n: int, p: torch.Tensor) -> (torch.Tensor, torch.Tensor):
       - mean of shape [n_regions, n_outs]
       - cov of shape [n_regions, n_outs, n_outs]
     """
-    mean = n * p
+    print(n.shape, p.shape)
+    mean = n * p  # TODO - this line is busted
     cov = torch.diag_embed(mean) - n * p[:, :, np.newaxis] * p[:, np.newaxis, :]
     return mean, cov
