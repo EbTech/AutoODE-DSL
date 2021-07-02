@@ -102,6 +102,7 @@ class History:
         self,
         N: torch.Tensor,  # total pop, shape [num_regions]
         num_pos_and_alive: torch.Tensor,  # T + R, shape [num_days, num_regions]
+        num_dead: torch.Tensor,  # D, shape [num_days, num_regions]
         # num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
@@ -114,8 +115,10 @@ class History:
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
 
+        # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
+        # constraints equals 4 states to fit
         self.data = torch.full(
-            (len(self.fields) - 2, self.num_days, self.num_regions),
+            (4, self.num_days, self.num_regions),
             0.0,
             device=device,
             requires_grad=requires_grad,
@@ -127,7 +130,7 @@ class History:
     T = property(lambda self: self.data[2])
     U = property(lambda self: self.data[3])
     R = property(lambda self: self.num_pos_and_alive - self.T)  # implicit...
-    D = property(lambda self: self.data[4])
+    D = property(lambda self: self.num_dead)
 
     @property
     def S(self):
@@ -146,8 +149,7 @@ class History:
         D = dataset.tensor[:, -1, :]
         TR = TRD - D
 
-        history = cls(N=dataset.pop_2018, num_pos_and_alive=TR, **kwargs)
-        history.D[:] = D
+        history = cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
         return history
 
     def __getitem__(self, i: int):
@@ -389,7 +391,7 @@ class SeiturdModel(nn.Module):
         return flow_multinomial(state.S, p)
 
     def flow_from_E(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
-        # t is not used
+        # t is only included to keep the interface uniform, it's not used
         p = [self.prob_E_I()]
         return flow_multinomial(state.E, p)
 
