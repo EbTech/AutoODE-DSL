@@ -139,7 +139,7 @@ class C19Dataset(torch.utils.data.Dataset):
         return df
 
     def get_adjacency(self) -> torch.Tensor:
-        adj = torch.zeros((len(self.state_names),) * 2, dtype=float)
+        adj = torch.zeros((len(self.state_names),) * 2, dtype=torch.float)
         state_to_i = {n: i for i, n in enumerate(self.state_names)}
         stab_to_state = {a: n for a, n in zip(self.meta.index, self.meta.name)}
 
