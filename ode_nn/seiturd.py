@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, special
-from torch.distributions import MultivariateNormal
+from torch.distributions import Multinomial, MultivariateNormal
 from torch.utils import data
 
 from .data import C19Dataset
@@ -35,17 +35,11 @@ class State(NamedTuple):
         """Total population"""
         return sum(self)
 
-    def __add__(self, other: State) -> State:
-        return State(*[a + b for (a, b) in zip(self, other)])
-
-    def __sub__(self, other: State) -> State:
-        return State(*[a - b for (a, b) in zip(self, other)])
-
     # As the transition model is a tree, flows are uniquely determined by delta,
     # since both have one fewer degree of freedom than the number of states.
     # To infer flows, proceed by eliminating one leaf at a time.
     def flows_to(self, other: State) -> Flows:
-        delta = other - self
+        delta = State(*[a - b for (a, b) in zip(self, other)])
 
         T_D = delta.D
         T_R = delta.R
@@ -55,6 +49,17 @@ class State(NamedTuple):
         S_E = delta.E + E_I  # other.E == self.E - E_I + S_E
 
         return Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
+
+    def add_flow(self, flows: Flows) -> State:
+        S = self.S - flows.S_E
+        E = self.E + flows.S_E - flows.E_I
+        I = self.I + flows.E_I - flows.I_T - flows.I_U  # noqa: E741
+        T = self.T + flows.I_T - flows.T_R - flows.T_D
+        U = self.U + flows.I_U
+        R = self.R + flows.T_R
+        D = self.D + flows.T_D
+
+        return State(S=S, E=E, I=I, T=T, U=U, R=R, D=D)
 
 
 class Flows(NamedTuple):
@@ -110,11 +115,12 @@ class History:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.N = torch.as_tensor(N, device=device)
-        self.num_pos_and_alive = torch.as_tensor(num_pos_and_alive, device=device)
+        # copy the input data so we don't accidentally modify it in __setitem__
+        self.N = torch.tensor(N, device=device)
+        self.num_pos_and_alive = torch.tensor(num_pos_and_alive, device=device)
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
-        self.num_dead = num_dead
+        self.num_dead = torch.tensor(num_dead, device=device)
         assert num_dead.shape == (self.num_days, self.num_regions)
 
         # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
@@ -150,19 +156,17 @@ class History:
         TRD = dataset.tensor[:, 0, :]
         D = dataset.tensor[:, -1, :]
         TR = TRD - D
-
-        history = cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
-        return history
+        return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
 
     def __getitem__(self, i: int):
-        return State(*(getattr(self, n)[i] for n in self.fields))
+        return State(**{n: getattr(self, n)[i] for n in self.fields})
 
-    def __setitem__(self, i: int, state: State, check_consistency: bool = False):
-        if check_consistency:
-            assert torch.equal(state.N, self.N)
-            assert torch.equal(state.T + state.R, self.num_pos_and_alive)
+    def __setitem__(self, i: int, state: State):
+        assert torch.equal(state.N, self.N)
+        self.num_pos_and_alive[i] = state.T + state.R
+        self.num_dead[i] = state.D
         for name, state_val in zip(State._fields, state):
-            if name in "SR":
+            if name in "SRD":  # implicit stuff
                 continue
             getattr(self, name)[i] = state_val
 
@@ -268,46 +272,6 @@ class SeiturdModel(nn.Module):
     def decay_T(self) -> torch.Tensor:
         return special.expit(self.logit_decay_T)
 
-    # run_one_step and run_forward are broken now, because we removed the
-    # change functions....
-
-    # def run_one_step(self, state: State, t: int) -> State:
-    #     """
-    #     Runs the model from ``history``; this model is Markov and
-    #     therefore only looks at the *last* day of ``history``.
-    #     """
-    #     return state + State(
-    #         *(getattr(self, f"change_{n}")(state, t) for n in State._fields)
-    #     )
-    #
-    # def run_forward(
-    #     self,
-    #     initial_state: State,
-    #     initial_t: int,
-    #     num_days: int,
-    #     requires_grad: bool = False,
-    # ) -> History:
-    #     """
-    #     Walk the model forward from ``initial_state``.
-    #
-    #     Returns a new ``History`` object, covering days ``initial_t + 1``,
-    #     ..., ``initial_t + num_days``.
-    #
-    #     (The new history uses the same device as ``initial_state``;
-    #     ``requires_grad`` is passed along.)
-    #     """
-    #     future = History(
-    #         self.num_regions,
-    #         num_days,
-    #         requires_grad=requires_grad,
-    #         device=initial_state.S.device,
-    #     )
-    #
-    #     curr_state = initial_state
-    #     for i in range(num_days):
-    #         curr_state = future[i] = self.run_one_step(curr_state, initial_t + i + 1)
-    #     return future
-
     def log_prob(self, history: History) -> float:
         assert self.num_days == history.num_days
 
@@ -338,6 +302,56 @@ class SeiturdModel(nn.Module):
 
         return logp
 
+    def sample_one_step(self, state: State, t: int) -> State:
+        """
+        Runs the model from ``history``; this model is Markov and
+        therefore only looks at the *last* day of ``history``.
+        """
+
+        def do_sampling(ns, ps):
+            """
+            ps and the return value both have shape [num_regions, out_degree]
+            """
+            probs = torch.cat((ps, 1 - ps.sum(1, keepdim=True)), dim=1)
+            dist = Multinomial(ns, probs=probs)
+            return dist.sample().t()[:-1]
+
+        (S_E,) = do_sampling(state.S, self.flow_from_S(state, t))
+        (E_I,) = do_sampling(state.E, self.flow_from_E(state, t))
+        I_T, I_U = do_sampling(state.I, self.from_from_I(state, t))
+        T_R, T_D = do_sampling(state.T, self.from_from_T(state, t))
+
+        flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
+        return state.add_flow(flows)
+
+    def sample_forward(
+        self,
+        initial_state: State,
+        initial_t: int,
+        num_days: int,
+        requires_grad: bool = False,
+    ) -> History:
+        """
+        Sample the model forward from ``initial_state``.
+
+        Returns a new ``History`` object, covering days ``initial_t + 1``,
+        ..., ``initial_t + num_days``.
+
+        (The new history uses the same device as ``initial_state``;
+        ``requires_grad`` is passed along.)
+        """
+        future = History(
+            self.num_regions,
+            num_days,
+            requires_grad=requires_grad,
+            device=initial_state.S.device,
+        )
+
+        curr_state = initial_state
+        for i in range(num_days):
+            curr_state = future[i] = self.sample_one_step(curr_state, initial_t + i + 1)
+        return future
+
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
     # state X, to transition into state Y.
@@ -366,43 +380,48 @@ class SeiturdModel(nn.Module):
         # I_t must (num_regions,)
         return self.contagion_I[t] * (self.adjacency_matrix @ I_t)
 
+    # These prob_* functions return "something that can broadcast with an
+    # array of shape [num_regions]": prob_S_E actually varies per region
+    # and so returns shape [num_regions], but the others currently don't and
+    # so return shape [1].
+
     def prob_E_I(self) -> torch.Tensor:
-        return self.decay_E
+        return self.decay_E.unsqueeze(0)
 
     def prob_I_out(self) -> torch.Tensor:  # I->T or I->U
-        return self.decay_I
+        return self.decay_I.unsqueeze(0)
 
     def prob_I_T(self, t: int) -> torch.Tensor:
-        return self.detection_rate[t] * self.prob_I_out()
+        return (self.detection_rate[t] * self.prob_I_out()).unsqueeze(0)
 
     def prob_I_U(self, t: int) -> torch.Tensor:
-        return (1 - self.detection_rate[t]) * self.prob_I_out()
+        return ((1 - self.detection_rate[t]) * self.prob_I_out()).unsqueeze(0)
 
     def prob_T_out(self) -> torch.Tensor:  # T->R or T->D
-        return self.decay_T
+        return self.decay_T.unsqueeze(0)
 
     def prob_T_R(self, t: int) -> torch.Tensor:
-        return self.recovery_rate[t] * self.prob_T_out()
+        return (self.recovery_rate[t] * self.prob_T_out()).unsqueeze(0)
 
     def prob_T_D(self, t: int) -> torch.Tensor:
-        return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
+        return ((1.0 - self.recovery_rate[t]) * self.prob_T_out()).unsqueeze(0)
 
     # Distributions of population flows
     def flow_from_S(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
-        p = [self.prob_S_E(state.I, t)]
+        p = self.prob_S_E(state.I, t).unsqueeze(1)
         return flow_multinomial(state.S, p)
 
     def flow_from_E(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
         # t is only included to keep the interface uniform, it's not used
-        p = [self.prob_E_I()]
+        p = self.prob_E_I().unsqueeze(1)
         return flow_multinomial(state.E, p)
 
     def flow_from_I(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
-        p = [self.prob_I_T(t), self.prob_I_U(t)]
+        p = torch.stack([self.prob_I_T(t), self.prob_I_U(t)], dim=1)
         return flow_multinomial(state.I, p)
 
     def flow_from_T(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
-        p = [self.prob_T_R(t), self.prob_T_D(t)]
+        p = torch.stack([self.prob_T_R(t), self.prob_T_D(t)], dim=1)
         return flow_multinomial(state.T, p)
 
 
@@ -418,7 +437,6 @@ def flow_multinomial(n: int, p: torch.Tensor) -> (torch.Tensor, torch.Tensor):
       - mean of shape [n_regions, n_outs]
       - cov of shape [n_regions, n_outs, n_outs]
     """
-    print(n.shape, p.shape)
-    mean = n * p  # TODO - this line is busted
-    cov = torch.diag_embed(mean) - n * p[:, :, np.newaxis] * p[:, np.newaxis, :]
+    mean = n.unsqueeze(1) * p
+    cov = torch.diag_embed(mean) - n * p.unsqueeze(2) * p.unsqueeze(1)
     return mean, cov
