@@ -7,8 +7,8 @@ from typing import List, NamedTuple, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn, special
 from torch.distributions import MultivariateNormal
 from torch.utils import data
 
@@ -238,11 +238,11 @@ class SeiturdModel(nn.Module):
         # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
-        self.ln_decay_E = nn.Parameter(torch.log(torch.rand(1)))
+        self.logit_decay_E = nn.Parameter(torch.logit(torch.rand(1)))
         # lambda_I = rate of I -> {T, U} transition
-        self.ln_decay_I = nn.Parameter(torch.log(torch.rand(1)))
+        self.logit_decay_I = nn.Parameter(torch.logit(torch.rand(1)))
         # lambda_T = rate of T -> {R, D} transition
-        self.ln_decay_T = nn.Parameter(torch.log(torch.rand(1)))
+        self.logit_decay_T = nn.Parameter(torch.logit(torch.rand(1)))
 
         # d_i = detection rate
         self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)))
@@ -258,15 +258,15 @@ class SeiturdModel(nn.Module):
 
     @property
     def decay_E(self) -> torch.Tensor:
-        return torch.exp(self.ln_decay_E)
+        return special.expit(self.logit_decay_E)
 
     @property
     def decay_I(self) -> torch.Tensor:
-        return torch.exp(self.ln_decay_I)
+        return special.expit(self.logit_decay_I)
 
     @property
     def decay_T(self) -> torch.Tensor:
-        return torch.exp(self.ln_decay_T)
+        return special.expit(self.logit_decay_T)
 
     # run_one_step and run_forward are broken now, because we removed the
     # change functions....
