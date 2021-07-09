@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn, special
+from torch import nn
 from torch.distributions import Multinomial, MultivariateNormal
 from torch.utils import data
 
@@ -262,15 +262,15 @@ class SeiturdModel(nn.Module):
 
     @property
     def decay_E(self) -> torch.Tensor:
-        return special.expit(self.logit_decay_E)
+        return F.sigmoid(self.logit_decay_E)
 
     @property
     def decay_I(self) -> torch.Tensor:
-        return special.expit(self.logit_decay_I)
+        return F.sigmoid(self.logit_decay_I)
 
     @property
     def decay_T(self) -> torch.Tensor:
-        return special.expit(self.logit_decay_T)
+        return F.sigmoid(self.logit_decay_T)
 
     def log_prob(self, history: History) -> float:
         assert self.num_days == history.num_days
@@ -440,5 +440,6 @@ def flow_multinomial(
       - cov of shape [n_regions, n_outs, n_outs]
     """
     mean = n.unsqueeze(1) * p
-    cov = torch.diag_embed(mean) - n * p.unsqueeze(2) * p.unsqueeze(1)
+    p_outer = p.unsqueeze(2) * p.unsqueeze(1)
+    cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
     return mean, cov
