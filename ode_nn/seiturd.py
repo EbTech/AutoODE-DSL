@@ -438,5 +438,6 @@ def flow_multinomial(n: int, p: torch.Tensor) -> (torch.Tensor, torch.Tensor):
       - cov of shape [n_regions, n_outs, n_outs]
     """
     mean = n.unsqueeze(1) * p
-    cov = torch.diag_embed(mean) - n * p.unsqueeze(2) * p.unsqueeze(1)
+    p_outer = p.unsqueeze(2) * p.unsqueeze(1)
+    cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
     return mean, cov
