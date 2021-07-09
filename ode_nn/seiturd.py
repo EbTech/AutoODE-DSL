@@ -377,13 +377,15 @@ class SeiturdModel(nn.Module):
 
     # NOTE: We are currently assuming that people in the T state are not
     # contagious, i.e., eps_{i,t} = 0.
-    def prob_S_E(self, I_t: torch.Tensor, t: int) -> torch.Tensor:
+    def prob_S_E(self, I_t: torch.Tensor, N: torch.Tensor, t: int) -> torch.Tensor:
         """
         The fraction of ``S`` that is transformed into ``E``.
 
         Args:
           I_t (torch.Tensor): infected population ``I`` at time ``t``,
             of shape ``(num_regions,)``
+          N (torch.Tensor): total population in each region
+            (shape ``[num_regions]``)
           t (int): time index
 
         Returns:
@@ -391,8 +393,10 @@ class SeiturdModel(nn.Module):
         """
         # contagion_I is (n_days, num_regions)
         # adjacency_matrix is (n_regions, num_regions)
-        # I_t must (num_regions,)
-        return self.contagion_I[t] * (self.adjacency_matrix @ I_t)
+
+        infectious_pops = self.contagion_I[t] * (self.adjacency_matrix @ I_t)
+        total_pops = self.adjacency_matrix @ N
+        return -torch.expm1(-infectious_pops / total_pops)
 
     # These prob_* functions return "something that can broadcast with an
     # array of shape [num_regions]": prob_S_E actually varies per region
@@ -422,7 +426,7 @@ class SeiturdModel(nn.Module):
 
     # Distributions of population flows
     def flow_from_S(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        p = self.prob_S_E(state.I, t).unsqueeze(1)
+        p = self.prob_S_E(state.I, state.N, t).unsqueeze(1)
         return flow_multinomial(state.S, p)
 
     def flow_from_E(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
