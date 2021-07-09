@@ -7,7 +7,6 @@ from typing import List, NamedTuple, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Multinomial, MultivariateNormal
 from torch.utils import data
@@ -275,15 +274,15 @@ class SeiturdModel(nn.Module):
 
     @property
     def decay_E(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_E)
+        return torch.sigmoid(self.logit_decay_E)
 
     @property
     def decay_I(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_I)
+        return torch.sigmoid(self.logit_decay_I)
 
     @property
     def decay_T(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_T)
+        return torch.sigmoid(self.logit_decay_T)
 
     def log_prob(self, history: History) -> float:
         assert self.num_days == history.num_days
