@@ -1,4 +1,6 @@
 name: ode
+channels:
+  - pytorch
 dependencies:
   - python>=3.8,<3.9
   - pip
