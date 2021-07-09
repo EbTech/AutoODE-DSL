@@ -111,16 +111,22 @@ class History:
         # num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
     ):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if dtype is None:
+            dtype = torch.get_default_dtype()
 
         # copy the input data so we don't accidentally modify it in __setitem__
-        self.N = torch.tensor(N, device=device)
-        self.num_pos_and_alive = torch.tensor(num_pos_and_alive, device=device)
+        def cast(t):
+            return torch.tensor(t, device=device, dtype=dtype)
+
+        self.N = cast(N)
+        self.num_pos_and_alive = cast(num_pos_and_alive)
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
-        self.num_dead = torch.tensor(num_dead, device=device)
+        self.num_dead = cast(num_dead)
         assert num_dead.shape == (self.num_days, self.num_regions)
 
         # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
