@@ -132,6 +132,14 @@ class History:
             requires_grad=requires_grad,
         )
 
+        # initializing to 0 makes the likelihoods also act weird
+        # arbitrarily choose to divide the population evenly among SEIU,
+        # leave T at zero. (S is implicit, so don't assign to it but div by 4)
+        free_pop = self.N[np.newaxis, :] - self.num_pos_and_alive - self.num_dead
+        self.data[[0, 1, 3], :, :] = (
+            free_pop[np.newaxis, :, :].type(self.data.dtype) / 4
+        )
+
     # S is implicit to make things sum to N (below)
     E = property(lambda self: self.data[0])
     I = property(lambda self: self.data[1])  # noqa: E741
