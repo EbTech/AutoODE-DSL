@@ -4,7 +4,16 @@ import pytest
 import torch
 
 from ode_nn.data import C19Dataset
-from ode_nn.seiturd import History, SeiturdModel, State
+from ode_nn.seiturd import History, SeiturdModel, State, flow_multinomial
+
+
+class FlowMultinomialTest(TestCase):
+    def test_flow_multinomial(self):
+        n = torch.Tensor([1, 3, 3])
+        p = torch.Tensor([[0.1, 0.9], [0.9, 0.1], [0.9, 0.1]])
+        mean, cov = flow_multinomial(n, p)
+        assert mean.shape == (3, 2)
+        assert cov.shape == (3, 2, 2)
 
 
 class SeiturdTest(TestCase):

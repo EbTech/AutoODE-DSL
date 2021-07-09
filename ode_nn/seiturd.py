@@ -415,25 +415,27 @@ class SeiturdModel(nn.Module):
         return ((1.0 - self.recovery_rate[t]) * self.prob_T_out()).unsqueeze(0)
 
     # Distributions of population flows
-    def flow_from_S(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
+    def flow_from_S(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
         p = self.prob_S_E(state.I, t).unsqueeze(1)
         return flow_multinomial(state.S, p)
 
-    def flow_from_E(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
+    def flow_from_E(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
         # t is only included to keep the interface uniform, it's not used
         p = self.prob_E_I().unsqueeze(1)
         return flow_multinomial(state.E, p)
 
-    def flow_from_I(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
+    def flow_from_I(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
         p = torch.stack([self.prob_I_T(t), self.prob_I_U(t)], dim=1)
         return flow_multinomial(state.I, p)
 
-    def flow_from_T(self, state: State, t: int) -> (torch.Tensor, torch.Tensor):
+    def flow_from_T(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
         p = torch.stack([self.prob_T_R(t), self.prob_T_D(t)], dim=1)
         return flow_multinomial(state.T, p)
 
 
-def flow_multinomial(n: int, p: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+def flow_multinomial(
+    n: torch.Tensor, p: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes mean and covariance of a multinomial.
 
