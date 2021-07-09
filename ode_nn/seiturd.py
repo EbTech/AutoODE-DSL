@@ -256,11 +256,11 @@ class SeiturdModel(nn.Module):
         # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
-        self.logit_decay_E = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_E = nn.Parameter(torch.logit(torch.rand([])))
         # lambda_I = rate of I -> {T, U} transition
-        self.logit_decay_I = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_I = nn.Parameter(torch.logit(torch.rand([])))
         # lambda_T = rate of T -> {R, D} transition
-        self.logit_decay_T = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_T = nn.Parameter(torch.logit(torch.rand([])))
 
         # d_i = detection rate
         self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)))
@@ -406,19 +406,19 @@ class SeiturdModel(nn.Module):
         return self.decay_I.unsqueeze(0)
 
     def prob_I_T(self, t: int) -> torch.Tensor:
-        return (self.detection_rate[t] * self.prob_I_out()).unsqueeze(0)
+        return self.detection_rate[t] * self.prob_I_out()
 
     def prob_I_U(self, t: int) -> torch.Tensor:
-        return ((1 - self.detection_rate[t]) * self.prob_I_out()).unsqueeze(0)
+        return (1 - self.detection_rate[t]) * self.prob_I_out()
 
     def prob_T_out(self) -> torch.Tensor:  # T->R or T->D
         return self.decay_T.unsqueeze(0)
 
     def prob_T_R(self, t: int) -> torch.Tensor:
-        return (self.recovery_rate[t] * self.prob_T_out()).unsqueeze(0)
+        return self.recovery_rate[t] * self.prob_T_out()
 
     def prob_T_D(self, t: int) -> torch.Tensor:
-        return ((1.0 - self.recovery_rate[t]) * self.prob_T_out()).unsqueeze(0)
+        return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
 
     # Distributions of population flows
     def flow_from_S(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
