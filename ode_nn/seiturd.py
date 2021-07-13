@@ -7,7 +7,6 @@ from typing import List, NamedTuple, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Multinomial, MultivariateNormal
 from torch.utils import data
@@ -111,16 +110,22 @@ class History:
         # num_days: int,
         requires_grad: bool = False,
         device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
     ):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if dtype is None:
+            dtype = torch.get_default_dtype()
 
         # copy the input data so we don't accidentally modify it in __setitem__
-        self.N = torch.tensor(N, device=device)
-        self.num_pos_and_alive = torch.tensor(num_pos_and_alive, device=device)
+        def cast(t):
+            return torch.tensor(t, device=device, dtype=dtype)
+
+        self.N = cast(N)
+        self.num_pos_and_alive = cast(num_pos_and_alive)
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
-        self.num_dead = torch.tensor(num_dead, device=device)
+        self.num_dead = cast(num_dead)
         assert num_dead.shape == (self.num_days, self.num_regions)
 
         # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
@@ -131,6 +136,13 @@ class History:
             device=device,
             requires_grad=requires_grad,
         )
+
+        # initializing to 0 makes the likelihoods also act weird
+        # arbitrarily choose to divide available pops evenly among SEIU and TR
+        # (remembering that S and R are implicit)
+        free_pop = self.N[np.newaxis, :] - self.num_pos_and_alive - self.num_dead
+        self.data[[0, 1, 3], :, :] = free_pop[np.newaxis, :, :] / 4
+        self.data[2, :, :] = self.num_pos_and_alive / 2
 
     # S is implicit to make things sum to N (below)
     E = property(lambda self: self.data[0])
@@ -242,11 +254,11 @@ class SeiturdModel(nn.Module):
         # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
-        self.logit_decay_E = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_E = nn.Parameter(torch.logit(torch.rand([])))
         # lambda_I = rate of I -> {T, U} transition
-        self.logit_decay_I = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_I = nn.Parameter(torch.logit(torch.rand([])))
         # lambda_T = rate of T -> {R, D} transition
-        self.logit_decay_T = nn.Parameter(torch.logit(torch.rand(1)))
+        self.logit_decay_T = nn.Parameter(torch.logit(torch.rand([])))
 
         # d_i = detection rate
         self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)))
@@ -262,15 +274,15 @@ class SeiturdModel(nn.Module):
 
     @property
     def decay_E(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_E)
+        return torch.sigmoid(self.logit_decay_E)
 
     @property
     def decay_I(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_I)
+        return torch.sigmoid(self.logit_decay_I)
 
     @property
     def decay_T(self) -> torch.Tensor:
-        return F.sigmoid(self.logit_decay_T)
+        return torch.sigmoid(self.logit_decay_T)
 
     def log_prob(self, history: History) -> float:
         assert self.num_days == history.num_days
@@ -363,13 +375,15 @@ class SeiturdModel(nn.Module):
 
     # NOTE: We are currently assuming that people in the T state are not
     # contagious, i.e., eps_{i,t} = 0.
-    def prob_S_E(self, I_t: torch.Tensor, t: int) -> torch.Tensor:
+    def prob_S_E(self, I_t: torch.Tensor, N: torch.Tensor, t: int) -> torch.Tensor:
         """
         The fraction of ``S`` that is transformed into ``E``.
 
         Args:
           I_t (torch.Tensor): infected population ``I`` at time ``t``,
             of shape ``(num_regions,)``
+          N (torch.Tensor): total population in each region
+            (shape ``[num_regions]``)
           t (int): time index
 
         Returns:
@@ -377,8 +391,10 @@ class SeiturdModel(nn.Module):
         """
         # contagion_I is (n_days, num_regions)
         # adjacency_matrix is (n_regions, num_regions)
-        # I_t must (num_regions,)
-        return self.contagion_I[t] * (self.adjacency_matrix @ I_t)
+
+        infectious_pops = self.contagion_I[t] * (self.adjacency_matrix @ I_t)
+        total_pops = self.adjacency_matrix @ N
+        return -torch.expm1(-infectious_pops / total_pops)
 
     # These prob_* functions return "something that can broadcast with an
     # array of shape [num_regions]": prob_S_E actually varies per region
@@ -392,23 +408,23 @@ class SeiturdModel(nn.Module):
         return self.decay_I.unsqueeze(0)
 
     def prob_I_T(self, t: int) -> torch.Tensor:
-        return (self.detection_rate[t] * self.prob_I_out()).unsqueeze(0)
+        return self.detection_rate[t] * self.prob_I_out()
 
     def prob_I_U(self, t: int) -> torch.Tensor:
-        return ((1 - self.detection_rate[t]) * self.prob_I_out()).unsqueeze(0)
+        return (1 - self.detection_rate[t]) * self.prob_I_out()
 
     def prob_T_out(self) -> torch.Tensor:  # T->R or T->D
         return self.decay_T.unsqueeze(0)
 
     def prob_T_R(self, t: int) -> torch.Tensor:
-        return (self.recovery_rate[t] * self.prob_T_out()).unsqueeze(0)
+        return self.recovery_rate[t] * self.prob_T_out()
 
     def prob_T_D(self, t: int) -> torch.Tensor:
-        return ((1.0 - self.recovery_rate[t]) * self.prob_T_out()).unsqueeze(0)
+        return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
 
     # Distributions of population flows
     def flow_from_S(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        p = self.prob_S_E(state.I, t).unsqueeze(1)
+        p = self.prob_S_E(state.I, state.N, t).unsqueeze(1)
         return flow_multinomial(state.S, p)
 
     def flow_from_E(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:

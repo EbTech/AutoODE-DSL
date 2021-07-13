@@ -33,9 +33,10 @@ class SeiturdTest(TestCase):
     def test_prob_S_E(self):
         n_regions = 50
         I_t = torch.rand(n_regions)
+        N = I_t + torch.rand(n_regions) * 10
         A = torch.rand((n_regions, n_regions))
         model = SeiturdModel(num_days=3, adjacency_matrix=A)
-        pS = model.prob_S_E(I_t, t=0)
+        pS = model.prob_S_E(I_t, N, t=0)
         assert isinstance(pS, torch.Tensor)
         assert pS.shape == I_t.shape
 
