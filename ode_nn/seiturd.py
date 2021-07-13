@@ -261,28 +261,33 @@ class SeiturdModel(nn.Module):
         self.logit_decay_T = nn.Parameter(torch.logit(torch.rand([])))
 
         # d_i = detection rate
-        self.detection_rate = nn.Parameter(torch.rand((num_days, num_regions)))
+        self.logit_detection_rate = nn.Parameter(
+            torch.logit(torch.rand((num_days, num_regions)))
+        )
         # r_{i,t} = recovery rate
-        self.recovery_rate = nn.Parameter(torch.rand((num_days, num_regions)))
+        self.logit_recovery_rate = nn.Parameter(
+            torch.logit(torch.rand((num_days, num_regions)))
+        )
         # beta_{i,t} = probability of infection per interaction with I person
-        self.contagion_I = nn.Parameter(torch.rand((num_days, num_regions)))
+        self.logit_contagion_I = nn.Parameter(
+            torch.logit(torch.rand((num_days, num_regions)))
+        )
         # eps_{i,t} = probability of infection per interaction with T person
-        self.contagion_T = nn.Parameter(torch.rand((num_days, num_regions)))
+        self.logit_contagion_T = nn.Parameter(
+            torch.logit(torch.rand((num_days, num_regions)))
+        )
         # A_{i,j} = percentage of infected people in state j who interact with
         # each susceptible person of state i
-        self.connectivity = nn.Parameter(torch.eye(num_regions))
+        #  -- for now, we're just using self.adjacency_matrix
+        # self.connectivity = nn.Parameter(torch.eye(num_regions))
 
-    @property
-    def decay_E(self) -> torch.Tensor:
-        return torch.sigmoid(self.logit_decay_E)
-
-    @property
-    def decay_I(self) -> torch.Tensor:
-        return torch.sigmoid(self.logit_decay_I)
-
-    @property
-    def decay_T(self) -> torch.Tensor:
-        return torch.sigmoid(self.logit_decay_T)
+    decay_E = property(lambda self: torch.sigmoid(self.logit_decay_E))
+    decay_I = property(lambda self: torch.sigmoid(self.logit_decay_I))
+    decay_T = property(lambda self: torch.sigmoid(self.logit_decay_T))
+    detection_rate = property(lambda self: torch.sigmoid(self.logit_detection_rate))
+    recovery_rate = property(lambda self: torch.sigmoid(self.logit_recovery_rate))
+    contagion_I = property(lambda self: torch.sigmoid(self.logit_contagion_I))
+    contagion_T = property(lambda self: torch.sigmoid(self.logit_contagion_T))
 
     def log_prob(self, history: History) -> float:
         assert self.num_days == history.num_days
