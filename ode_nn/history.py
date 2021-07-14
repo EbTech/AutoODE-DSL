@@ -8,6 +8,7 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
 from .data import C19Dataset
 
@@ -68,37 +69,16 @@ class Flows(NamedTuple):
     T_D: torch.Tensor
 
 
-class History:
+class BaseHistory:
     """
     Represents the values of the SEITURD subpopulations over a span of ``num_days``.
 
-    This is computationally more efficient than creating a bunch of separate states.
-
-    The S state is implicit (S = N - E - I - T - U - R - D); this choice *does*
-    affect the gradient descent direction slightly, but seems unlikely
-    that would really matter.
-
-    The R state is also implicit (R = num_pos_and_alive - T).
+    This is an abstract base class, use a subclass to actually store the data
+    somehow.
     """
 
-    # Let f(x,y) = F(x,y,1-x-y). Then,
-    # df/dx = dF/dx - dF/dz,
-    # df/dy = dF/dy - dF/dz.
-    # Effectively, a gradient step does:
-    # x/step += dF/dx - dF/dz,
-    # y/step += dF/dy - dF/dz,
-    # z/step += 2*dF/dz - dF/dx - dF/dy.
-    #
-    # Hmmm I suppose the asymmetry comes from the fact that we're using
-    # (e_x-e_z, e_y-e_z) as our basis for the tangent space of the constraint
-    # manifold (i.e., the plane x+y+z=1). If we want to interpret the gradient
-    # as being the direction of greatest improvement, the basis should be
-    # orthonormal! E.g., taking the vector (1,1,-2) and rotating +/-45 degrees
-    # within the plane x+y+z=1 yields the orthogonal basis
-    # ((a+1)e_x + (a-1)e_y, (a-1)e_x + (a+1)e_y), where a = 1/sqrt(3).
-    # In higher dimensions, the rotation angle is arccos(1/sqrt(N-1)).
-
     fields = "SEITURD"  # could avoid hardcoding these, not bothering for now
+    # child class needs to implement S, E, I, etc properties
 
     def __init__(
         self,
@@ -115,31 +95,73 @@ class History:
         if dtype is None:
             dtype = torch.get_default_dtype()
 
+        # these are used in subclass __init__ but shouldn't really be "public"
+        self._device = device
+        self._requires_grad = requires_grad
+
         # copy the input data so we don't accidentally modify it in __setitem__
         def cast(t):
             return torch.tensor(t, device=device, dtype=dtype)
 
         self.N = cast(N)
-        self.num_pos_and_alive = cast(num_pos_and_alive)
+        self.num_pos_and_alive = cast(num_pos_and_alive)  # total of T + R
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
         assert self.N.shape == (self.num_regions,)
-        self.num_dead = cast(num_dead)
+        self.num_dead = cast(num_dead)  # people in D
         assert num_dead.shape == (self.num_days, self.num_regions)
+
+        # free_pop = S + E + I + U = N - (T + R + D)
+        self.free_pop = self.N[np.newaxis, :] - self.num_pos_and_alive - self.num_dead
+
+        # child class __init__ should use this to initialize the actual data now
+
+    @classmethod
+    def from_dataset(cls, dataset: C19Dataset, **kwargs):
+        TRD = dataset.tensor[:, 0, :]
+        D = dataset.tensor[:, -1, :]
+        TR = TRD - D
+        return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
+
+    def __getitem__(self, i: int):
+        return State(**{n: getattr(self, n)[i] for n in self.fields})
+
+    def __len__(self):
+        return len(self.fields)
+
+    def __repr__(self):
+        return (
+            f"<{type(self).__qualname__} object "
+            f"({self.num_days} days, {self.num_regions} regions)>"
+        )
+
+
+class HistoryWithImplicits(BaseHistory):
+    """
+    The S state is implicit (S = N - E - I - T - U - R - D); this choice *does*
+    affect the gradient descent direction slightly, but seems unlikely
+    that would really matter.
+
+    The R state is also implicit (R = num_pos_and_alive - T).
+
+    This approach has no "built-in" protection against negative values.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
         # constraints equals 4 states to fit
         self.data = torch.full(
             (4, self.num_days, self.num_regions),
             0.0,
-            device=device,
-            requires_grad=requires_grad,
+            device=self._device,
+            requires_grad=self._requires_grad,
         )
 
         # initializing to 0 makes the likelihoods also act weird
         # arbitrarily choose to divide available pops evenly among SEIU and TR
         # (remembering that S and R are implicit)
-        free_pop = self.N[np.newaxis, :] - self.num_pos_and_alive - self.num_dead
-        self.data[[0, 1, 3], :, :] = free_pop[np.newaxis, :, :] / 4
+        self.data[[0, 1, 3], :, :] = self.free_pop[np.newaxis, :, :] / 4
         self.data[2, :, :] = self.num_pos_and_alive / 2
 
     # S is implicit to make things sum to N (below)
@@ -161,30 +183,84 @@ class History:
             - self.D
         )
 
-    @classmethod
-    def from_dataset(cls, dataset: C19Dataset, **kwargs):
-        TRD = dataset.tensor[:, 0, :]
-        D = dataset.tensor[:, -1, :]
-        TR = TRD - D
-        return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
-
-    def __getitem__(self, i: int):
-        return State(**{n: getattr(self, n)[i] for n in self.fields})
-
     def __setitem__(self, i: int, state: State):
-        assert torch.equal(state.N, self.N)
+        assert torch.allclose(state.N, self.N)
         self.num_pos_and_alive[i] = state.T + state.R
         self.num_dead[i] = state.D
+        self.free_pop[i] = self.N - self.num_pos_and_alive[i] - self.num_dead[i]
         for name, state_val in zip(State._fields, state):
             if name in "SRD":  # implicit stuff
                 continue
+            # this is gross, but okay b/c of how EITU are implemented:
+            # it's essentially, e.g., self.data[2][i] = state_val
             getattr(self, name)[i] = state_val
 
-    def __len__(self):
-        return len(self.fields)
+    # thoughts about gradients in this model:
+    #
+    # Let f(x,y) = F(x,y,1-x-y). Then,
+    # df/dx = dF/dx - dF/dz,
+    # df/dy = dF/dy - dF/dz.
+    # Effectively, a gradient step does:
+    # x/step += dF/dx - dF/dz,
+    # y/step += dF/dy - dF/dz,
+    # z/step += 2*dF/dz - dF/dx - dF/dy.
+    #
+    # Hmmm I suppose the asymmetry comes from the fact that we're using
+    # (e_x-e_z, e_y-e_z) as our basis for the tangent space of the constraint
+    # manifold (i.e., the plane x+y+z=1). If we want to interpret the gradient
+    # as being the direction of greatest improvement, the basis should be
+    # orthonormal! E.g., taking the vector (1,1,-2) and rotating +/-45 degrees
+    # within the plane x+y+z=1 yields the orthogonal basis
+    # ((a+1)e_x + (a-1)e_y, (a-1)e_x + (a+1)e_y), where a = 1/sqrt(3).
+    # In higher dimensions, the rotation angle is arccos(1/sqrt(N-1)).
 
-    def __repr__(self):
-        return (
-            f"<{type(self).__qualname__} object "
-            f"({self.num_days} days, {self.num_regions} regions)>"
+
+class HistoryWithSoftmax(BaseHistory):
+    """
+    We know S+E+I+U and T+R at all times; stores the splits between them as
+    "logits" so that the sum is correct.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        def make(n):
+            return torch.full(
+                (self.num_days, self.num_regions, n),
+                0.0,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+
+        self.logits_SEIU = make(4)
+        self.logits_TR = make(2)
+
+    # this feels incredibly wasteful :/ - maybe implement caching...
+    SEIU = property(lambda self: self.free_pop * F.softmax(self.logits_SEIU, dim=2))
+    S = property(lambda self: self.SEIU[..., 0])
+    E = property(lambda self: self.SEIU[..., 1])
+    I = property(lambda self: self.SEIU[..., 2])  # noqa: E741
+    U = property(lambda self: self.SEIU[..., 3])
+
+    TR = property(
+        lambda self: self.num_pos_and_alive * F.softmax(self.logits_TR, dim=2)
+    )
+    T = property(lambda self: self.TR[..., 0])
+    R = property(lambda self: self.TR[..., 1])
+
+    D = property(lambda self: self.num_dead)
+
+    def __setitem__(self, i: int, state: State):
+        assert torch.allclose(state.N, self.N)
+
+        self.num_pos_and_alive[i] = state.T + state.R
+        self.num_dead[i] = state.D
+        self.free_pop[i] = self.N - self.num_pos_and_alive[i] - self.num_dead[i]
+
+        self.logits_SEIU[i] = torch.log(
+            torch.stack([state.S, state.E, state.I, state.U], 1)
         )
+        self.logits_TR[i] = torch.log(torch.stack([state.T, state.R], 1))
+
+
+History = HistoryWithSoftmax  # default implementation
