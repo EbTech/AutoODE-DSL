@@ -96,9 +96,9 @@ class SeiturdModel(nn.Module):
             torch.logit(torch.rand((num_days, num_regions)))
         )
         # eps_{i,t} = probability of infection per interaction with T person
-        self.logit_contagion_T = nn.Parameter(
-            torch.logit(torch.rand((num_days, num_regions)))
-        )
+        # self.logit_contagion_T = nn.Parameter(
+        #    torch.logit(torch.rand((num_days, num_regions)))
+        # )
         # A_{i,j} = percentage of infected people in state j who interact with
         # each susceptible person of state i
         #  -- for now, we're just using self.adjacency_matrix
