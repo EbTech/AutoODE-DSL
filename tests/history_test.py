@@ -12,10 +12,11 @@ class HistoryTest(TestCase):
     def test_assign(self):
         ds = C19Dataset()
         for History in [HistoryWithSoftmax, HistoryWithImplicits]:
-            history = History.from_dataset(ds)
-            logits = torch.softmax(torch.rand(7, history.num_regions), dim=0)
-            SEITURD = logits * history.N[np.newaxis, :]
-            state = State(*SEITURD)
-            history[4] = state
-            for source, exp in zip(history[4], state):
-                assert torch.allclose(source, exp)
+            with torch.no_grad():
+                history = History.from_dataset(ds)
+                logits = torch.softmax(torch.rand(7, history.num_regions, device=history.N.device), dim=0)
+                SEITURD = logits * history.N[np.newaxis, :]
+                state = State(*SEITURD)
+                history[4] = state
+                for source, exp in zip(history[4], state):
+                    assert torch.allclose(source, exp)

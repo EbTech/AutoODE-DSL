@@ -44,8 +44,7 @@ class SeiturdTest(TestCase):
         ds = C19Dataset()
         A = ds.adjacency
         history = History.from_dataset(ds)
-        model = SeiturdModel(history.num_days, A)
-        history = History.from_dataset(ds)
+        model = SeiturdModel(history.num_days, A).to(history.N.device)
         log_prob = model.log_prob(history)
         assert isinstance(log_prob, torch.Tensor)
         assert log_prob.dtype is torch.float

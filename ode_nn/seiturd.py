@@ -63,16 +63,14 @@ class SeiturdModel(nn.Module):
         assert num_days > 0
         super().__init__()
 
-        self.adjacency_matrix = adjacency_matrix
         if adjacency_matrix is None:
-            self.adjacency_matrix = torch.Tensor([[1]])
+            adjacency_matrix = torch.eye(1)
+        assert adjacency_matrix.ndim == 2
+        assert adjacency_matrix.shape[0] == adjacency_matrix.shape[1]
+        self.register_buffer('adjacency_matrix', adjacency_matrix)
 
-        assert self.adjacency_matrix.ndim == 2
-        assert self.adjacency_matrix.shape[0] == self.adjacency_matrix.shape[1]
-
-        num_regions = self.adjacency_matrix.shape[0]
         self.num_days = num_days
-        self.num_regions = num_regions
+        self.num_regions = num_regions = self.adjacency_matrix.shape[0]
 
         # TODO: determine what the typical scales are
         # TODO: initialize parameters to typical values & scales
