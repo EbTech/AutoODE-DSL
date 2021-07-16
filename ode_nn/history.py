@@ -69,7 +69,7 @@ class Flows(NamedTuple):
     T_D: torch.Tensor
 
 
-class BaseHistory:
+class BaseHistory(torch.nn.Module):
     """
     Represents the values of the SEITURD subpopulations over a span of ``num_days``.
 
@@ -86,10 +86,12 @@ class BaseHistory:
         num_pos_and_alive: torch.Tensor,  # T + R, shape [num_days, num_regions]
         num_dead: torch.Tensor,  # D, shape [num_days, num_regions]
         # num_days: int,
-        requires_grad: bool = False,
+        requires_grad: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ):
+        super().__init__()
+
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if dtype is None:
@@ -225,15 +227,23 @@ class HistoryWithSoftmax(BaseHistory):
         super().__init__(*args, **kwargs)
 
         def make(n):
-            return torch.full(
-                (self.num_days, self.num_regions, n),
-                0.0,
-                device=self._device,
-                requires_grad=self._requires_grad,
+            # TODO - this doesn't make parameters
+            return torch.nn.Parameter(
+                torch.full(
+                    (self.num_days, self.num_regions, n),
+                    0.0,
+                    device=self._device,
+                    requires_grad=self._requires_grad,
+                )
             )
 
         self.logits_SEIU = make(4)
         self.logits_TR = make(2)
+
+        print("in HistoryWithSoftmax.__init__")
+        print("here are named parameters: ")
+        for name, params in self.named_parameters():
+            print("\t", name)
 
     # this feels incredibly wasteful :/ - maybe implement caching...
     SEIU = property(
