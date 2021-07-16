@@ -236,14 +236,17 @@ class HistoryWithSoftmax(BaseHistory):
         self.logits_TR = make(2)
 
     # this feels incredibly wasteful :/ - maybe implement caching...
-    SEIU = property(lambda self: self.free_pop * F.softmax(self.logits_SEIU, dim=2))
+    SEIU = property(
+        lambda self: self.free_pop.unsqueeze(2) * F.softmax(self.logits_SEIU, dim=2)
+    )
     S = property(lambda self: self.SEIU[..., 0])
     E = property(lambda self: self.SEIU[..., 1])
     I = property(lambda self: self.SEIU[..., 2])  # noqa: E741
     U = property(lambda self: self.SEIU[..., 3])
 
     TR = property(
-        lambda self: self.num_pos_and_alive * F.softmax(self.logits_TR, dim=2)
+        lambda self: self.num_pos_and_alive.unsqueeze(2)
+        * F.softmax(self.logits_TR, dim=2)
     )
     T = property(lambda self: self.TR[..., 0])
     R = property(lambda self: self.TR[..., 1])
