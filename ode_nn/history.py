@@ -128,7 +128,7 @@ class BaseHistory(torch.nn.Module):
         return State(**{n: getattr(self, n)[i] for n in self.fields})
 
     def __len__(self):
-        return len(self.fields)
+        return self.num_days
 
     def __repr__(self):
         return (
