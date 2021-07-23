@@ -67,7 +67,7 @@ class SeiturdModel(nn.Module):
             adjacency_matrix = torch.eye(1)
         assert adjacency_matrix.ndim == 2
         assert adjacency_matrix.shape[0] == adjacency_matrix.shape[1]
-        self.register_buffer('adjacency_matrix', adjacency_matrix)
+        self.register_buffer("adjacency_matrix", adjacency_matrix)
 
         self.num_days = num_days
         self.num_regions = num_regions = self.adjacency_matrix.shape[0]
@@ -268,7 +268,7 @@ class SeiturdModel(nn.Module):
 
 
 def flow_multinomial(
-    n: torch.Tensor, p: torch.Tensor
+    n: torch.Tensor, p: torch.Tensor, fudge: float = 1e-7
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes mean and covariance of a multinomial.
@@ -284,4 +284,5 @@ def flow_multinomial(
     mean = n.unsqueeze(1) * p
     p_outer = p.unsqueeze(2) * p.unsqueeze(1)
     cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
+    cov = cov + fudge * torch.eye(cov.shape[1])[np.newaxis, :, :]  # blegh
     return mean, cov
