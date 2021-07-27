@@ -4,6 +4,7 @@ Classes for handling populations.
 
 from __future__ import annotations
 
+import datetime
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -118,9 +119,23 @@ class BaseHistory(torch.nn.Module):
         # child class __init__ should use this to initialize the actual data now
 
     @classmethod
-    def from_dataset(cls, dataset: C19Dataset, **kwargs):
-        TRD = dataset.tensor[:, 0, :]
-        D = dataset.tensor[:, -1, :]
+    def from_dataset(
+        cls,
+        dataset: C19Dataset,
+        first_date: Optional[datetime.date] = None,
+        last_date: Optional[datetime.date] = None,
+        **kwargs,
+    ):
+        # must be a nicer way to do this....
+        if first_date is None:
+            first_date = datetime.date(1970, 1, 1)
+        if last_date is None:
+            last_date = datetime.date(3000, 1, 1)
+        dates = dataset.df.reset_index().date
+        which = ((dates >= first_date) & (dates <= last_date)).values
+
+        TRD = dataset.tensor[which, 0, :]
+        D = dataset.tensor[which, -1, :]
         TR = TRD - D
         return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
 
