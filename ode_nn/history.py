@@ -240,11 +240,6 @@ class HistoryWithSoftmax(BaseHistory):
         self.logits_SEIU = make(4)
         self.logits_TR = make(2)
 
-        print("in HistoryWithSoftmax.__init__")
-        print("here are named parameters: ")
-        for name, params in self.named_parameters():
-            print("\t", name)
-
     # this feels incredibly wasteful :/ - maybe implement caching...
     SEIU = property(
         lambda self: self.free_pop.unsqueeze(2) * F.softmax(self.logits_SEIU, dim=2)

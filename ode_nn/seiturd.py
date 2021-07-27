@@ -284,5 +284,5 @@ def flow_multinomial(
     mean = n.unsqueeze(1) * p
     p_outer = p.unsqueeze(2) * p.unsqueeze(1)
     cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
-    cov = cov + fudge * torch.eye(cov.shape[1])[np.newaxis, :, :]  # blegh
+    cov = cov + fudge * torch.eye(cov.shape[1], out=torch.empty_like(cov))[np.newaxis, :, :]  # blegh
     return mean, cov
