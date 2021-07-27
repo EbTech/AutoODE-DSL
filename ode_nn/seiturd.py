@@ -110,7 +110,7 @@ class SeiturdModel(nn.Module):
     contagion_I = property(lambda self: torch.sigmoid(self.logit_contagion_I))
     contagion_T = property(lambda self: torch.sigmoid(self.logit_contagion_T))
 
-    def log_prob(self, history: History) -> float:
+    def log_prob(self, history: History) -> torch.Tensor:
         assert self.num_days == history.num_days
 
         total = 0
@@ -119,9 +119,9 @@ class SeiturdModel(nn.Module):
             new = history[t + 1]
             flows = old.flows_to(new)
             total += self.flow_log_prob(flows, old, t)
-        return total
+        return total.mean() / (len(history) - 1)
 
-    def flow_log_prob(self, flows: Flows, state: State, t: int) -> float:
+    def flow_log_prob(self, flows: Flows, state: State, t: int) -> torch.Tensor:
         logp = 0
 
         # TODO: these and the flow_from_* functions should be made generic,
@@ -284,5 +284,8 @@ def flow_multinomial(
     mean = n.unsqueeze(1) * p
     p_outer = p.unsqueeze(2) * p.unsqueeze(1)
     cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
-    cov = cov + fudge * torch.eye(cov.shape[1], out=torch.empty_like(cov))[np.newaxis, :, :]  # blegh
+    cov = (
+        cov
+        + fudge * torch.eye(cov.shape[1], out=torch.empty_like(cov))[np.newaxis, :, :]
+    )  # blegh
     return mean, cov
