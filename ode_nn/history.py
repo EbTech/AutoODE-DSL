@@ -38,7 +38,7 @@ class State(NamedTuple):
     # since both have one fewer degree of freedom than the number of states.
     # To infer flows, proceed by eliminating one leaf at a time.
     def flows_to(self, other: State) -> Flows:
-        delta = State(*[a - b for (a, b) in zip(self, other)])
+        delta = State(*[b - a for (a, b) in zip(self, other)])
 
         T_D = delta.D
         T_R = delta.R
