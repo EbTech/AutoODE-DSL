@@ -89,17 +89,18 @@ class SeiturdModel(nn.Module):
         self.logit_recovery_rate = nn.Parameter(
             torch.logit(torch.rand((num_days, num_regions)))
         )
-        # beta_{i,t} = probability of infection per interaction with I person
-        self.logit_contagion_I = nn.Parameter(
-            torch.logit(torch.rand((num_days, num_regions)))
+        # beta_{i,t} = number of potentially-contagious interactions per day
+        self.log_contagion_I = nn.Parameter(
+            torch.log(torch.rand((num_days, num_regions)))
         )
-        # eps_{i,t} = probability of infection per interaction with T person
+        # eps_{i,t} = number of potentially-contagious interactions with T
+        #             people per day; should be low if T people stay home,
+        #             so for now just removing from model and clamping to 0
         # self.logit_contagion_T = nn.Parameter(
         #    torch.logit(torch.rand((num_days, num_regions)))
         # )
-        # A_{i,j} = percentage of infected people in state j who interact with
-        # each susceptible person of state i
-        #  -- for now, we're just using self.adjacency_matrix
+        # A_{i,j} = relative frequency of interaction across regions
+        #           -- for now, we're just using self.adjacency_matrix
         # self.connectivity = nn.Parameter(torch.eye(num_regions))
 
     decay_E = property(lambda self: torch.sigmoid(self.logit_decay_E))
@@ -107,8 +108,8 @@ class SeiturdModel(nn.Module):
     decay_T = property(lambda self: torch.sigmoid(self.logit_decay_T))
     detection_rate = property(lambda self: torch.sigmoid(self.logit_detection_rate))
     recovery_rate = property(lambda self: torch.sigmoid(self.logit_recovery_rate))
-    contagion_I = property(lambda self: torch.sigmoid(self.logit_contagion_I))
-    contagion_T = property(lambda self: torch.sigmoid(self.logit_contagion_T))
+    contagion_I = property(lambda self: torch.exp(self.log_contagion_I))
+    # contagion_T = property(lambda self: torch.exp(self.log_contagion_T))
 
     def log_prob(self, history: History) -> torch.Tensor:
         assert self.num_days == history.num_days
