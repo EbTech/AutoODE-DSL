@@ -1,7 +1,6 @@
-# vs code shit
+# vs code shit  - this should be in your global gitignore, dummy
 .vscode*
-
-# emacs backups
+# emacs backups  - same
 *~
 
 /ode_nn.egg-info
@@ -9,3 +8,4 @@
 
 __pycache__
 .ipynb_checkpoints
+*.pt
