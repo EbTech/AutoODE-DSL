@@ -19,13 +19,21 @@ print(
 
 opt = torch.optim.Adam(list(model.parameters()) + list(history.parameters()), lr=1e-2)
 
+# Non-default profiler schedule allows user to turn profiler on and off
+# on different iterations of the training loop;
+# trace_handler is called every time a new trace becomes available
+def trace_handler(prof):
+    print(prof.key_averages().table(
+        sort_by="self_cuda_time_total", row_limit=-1))
+    # prof.export_chrome_trace("/tmp/test_trace_" + str(prof.step_num) + ".json")
+
 with torch.profiler.profile(
     schedule=torch.profiler.schedule(
         wait=2,
         warmup=2,
         active=6,
         repeat=1),
-    on_trace_ready=tensorboard_trace_handler,
+    on_trace_ready=trace_handler,
     with_stack=True
 ) as profiler:
     for step in range(100_000):
