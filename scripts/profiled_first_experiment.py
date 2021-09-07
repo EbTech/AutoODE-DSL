@@ -19,19 +19,29 @@ print(
 
 opt = torch.optim.Adam(list(model.parameters()) + list(history.parameters()), lr=1e-2)
 
-for step in range(100_000):
-    opt.zero_grad()
-    regs = {}
-    for n in ["contagion_I", "detection_rate", "recovery_rate"]:
-        regs[n] = 100 * getattr(model, n).diff(dim=0).abs().sum()
-    loss = -model.log_prob(history) + sum(regs.values())
-    loss.backward()
-    opt.step()
-    print(
-        f"step {step:5,}  loss: {loss.detach():>15.3f}   "
-        f"E->: {model.decay_I:<5.3}   I->: {model.decay_E:<5.3}   T->: {model.decay_T:<5.3}   "
-        "regs: " + " ".join(f"{n}: {v:>10.0f}" for n, v in regs.items())
-    )
-    if step % 2_000 == 0:
-        d = {"model": model, "history": history, "opt": opt}
-        torch.save(d, f"checkpt_{step}.pt")
+with torch.profiler.profile(
+    schedule=torch.profiler.schedule(
+        wait=2,
+        warmup=2,
+        active=6,
+        repeat=1),
+    on_trace_ready=tensorboard_trace_handler,
+    with_stack=True
+) as profiler:
+    for step in range(100_000):
+        opt.zero_grad()
+        regs = {}
+        for n in ["contagion_I", "detection_rate", "recovery_rate"]:
+            regs[n] = 100 * getattr(model, n).diff(dim=0).abs().sum()
+        loss = -model.log_prob(history) + sum(regs.values())
+        loss.backward()
+        opt.step()
+        profiler.step()
+        print(
+            f"step {step:5,}  loss: {loss.detach():>15.3f}   "
+            f"E->: {model.decay_I:<5.3}   I->: {model.decay_E:<5.3}   T->: {model.decay_T:<5.3}   "
+            "regs: " + " ".join(f"{n}: {v:>10.0f}" for n, v in regs.items())
+        )
+        if step % 2_000 == 0:
+            d = {"model": model, "history": history, "opt": opt}
+            torch.save(d, f"checkpt_{step}.pt")
