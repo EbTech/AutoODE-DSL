@@ -28,12 +28,23 @@ def trace_handler(prof):
     # prof.export_chrome_trace("/tmp/test_trace_" + str(prof.step_num) + ".json")
 
 with torch.profiler.profile(
+    activities=[
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    ],
+
+    # In this example with wait=1, warmup=1, active=2,
+    # profiler will skip the first step/iteration,
+    # start warming up on the second, record
+    # the third and the forth iterations,
+    # after which the trace will become available
+    # and on_trace_ready (when set) is called;
+    # the cycle repeats starting with the next step
     schedule=torch.profiler.schedule(
-        wait=2,
-        warmup=2,
-        active=6,
-        repeat=1),
-    on_trace_ready=trace_handler,
+        wait=1,
+        warmup=1,
+        active=2),
+    on_trace_ready=torch.profiler.tensorboard_trace_handler("logs"),
     with_stack=True
 ) as profiler:
     for step in range(100_000):
