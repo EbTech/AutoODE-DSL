@@ -104,7 +104,7 @@ class BaseHistory(torch.nn.Module):
 
         # copy the input data so we don't accidentally modify it in __setitem__
         def cast(t):
-            return torch.tensor(t, device=device, dtype=dtype)
+            return torch.as_tensor(t, device=device, dtype=dtype).detach().clone()
 
         self.N = cast(N)
         self.num_pos_and_alive = cast(num_pos_and_alive)  # total of T + R
@@ -138,6 +138,22 @@ class BaseHistory(torch.nn.Module):
         D = dataset.tensor[which, -1, :]
         TR = TRD - D
         return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
+
+    @classmethod
+    def from_states(cls, states: list[State]):
+        N = states[0].N
+        assert all(torch.allclose(state.N, N) for state in states[1:])
+
+        self = cls(
+            N=N,
+            num_pos_and_alive=N.new_zeros((len(states), N.shape[0])),
+            num_dead=N.new_zeros((len(states), N.shape[0])),
+            device=N.device,
+            dtype=N.dtype,
+        )
+        for i, state in enumerate(states):
+            self[i] = state
+        return self
 
     def __getitem__(self, i: int):
         return State(**{n: getattr(self, n)[i] for n in self.fields})

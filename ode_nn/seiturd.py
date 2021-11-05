@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 from torch import nn
-from torch.distributions import Multinomial, MultivariateNormal
+from torch.distributions import Multinomial
 
 from .history import Flows, History, State
 from .linalg_utils import BivariateNormal, UnivariateNormal
@@ -128,16 +128,16 @@ class SeiturdModel(nn.Module):
 
         # TODO: these and the flow_from_* functions should be made generic,
         # by keeping a dictionary or something of what the flows are
-        S_dist = UnivariateNormal(*self.flow_from_S(state, t))
+        S_dist = UnivariateNormal(*self.flow_from("S", state, t))
         logp += S_dist.log_prob(flows.S_E.unsqueeze(1))
 
-        E_dist = UnivariateNormal(*self.flow_from_E(state, t))
+        E_dist = UnivariateNormal(*self.flow_from("E", state, t))
         logp += E_dist.log_prob(flows.E_I.unsqueeze(1))
 
-        I_dist = BivariateNormal(*self.flow_from_I(state, t))
+        I_dist = BivariateNormal(*self.flow_from("I", state, t))
         logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U), 1))
 
-        T_dist = BivariateNormal(*self.flow_from_T(state, t))
+        T_dist = BivariateNormal(*self.flow_from("T", state, t))
         logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D), 1))
 
         return logp
@@ -156,10 +156,10 @@ class SeiturdModel(nn.Module):
             dist = Multinomial(ns, probs=probs)
             return dist.sample().t()[:-1]
 
-        (S_E,) = do_sampling(state.S, self.flow_from_S(state, t))
-        (E_I,) = do_sampling(state.E, self.flow_from_E(state, t))
-        I_T, I_U = do_sampling(state.I, self.from_from_I(state, t))
-        T_R, T_D = do_sampling(state.T, self.from_from_T(state, t))
+        (S_E,) = do_sampling(state.S, self.probs_from_S(state, t))
+        (E_I,) = do_sampling(state.E, self.probs_from_E(state, t))
+        I_T, I_U = do_sampling(state.I, self.probs_from_I(state, t))
+        T_R, T_D = do_sampling(state.T, self.probs_from_T(state, t))
 
         flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
         return state.add_flow(flows)
@@ -169,7 +169,6 @@ class SeiturdModel(nn.Module):
         initial_state: State,
         initial_t: int,
         num_days: int,
-        requires_grad: bool = False,
     ) -> History:
         """
         Sample the model forward from ``initial_state``.
@@ -177,20 +176,49 @@ class SeiturdModel(nn.Module):
         Returns a new ``History`` object, covering days ``initial_t + 1``,
         ..., ``initial_t + num_days``.
 
-        (The new history uses the same device as ``initial_state``;
-        ``requires_grad`` is passed along.)
+        (The new history uses the same device as ``initial_state``.)
         """
-        future = History(
-            self.num_regions,
-            num_days,
-            requires_grad=requires_grad,
-            device=initial_state.S.device,
-        )
-
-        curr_state = initial_state
+        states = [initial_state]
         for i in range(num_days):
-            curr_state = future[i] = self.sample_one_step(curr_state, initial_t + i + 1)
-        return future
+            states.append(self.sample_one_step(states[-1], initial_t + i + 1))
+        return History.from_states(states)
+
+    def many_samples(
+        self,
+        initial_state: State,
+        initial_t: int,
+        days: list[int],
+        num_samples: int,
+    ) -> torch.Tensor:
+        "Returns a tensor with axes [day, region, SEITURD, sample_idx]."
+        max_day = max(days)
+        samps = np.empty(
+            (len(days), self.num_regions, len(History.fields), num_samples)
+        )
+        for sample_id in range(num_samples):
+            history = self.sample_forward(initial_state, initial_t, max_day)
+            for day_id, day in enumerate(days):
+                state = history[day]
+                for field_id, field in enumerate(History.fields):
+                    samps[day_id, :, field_id, sample_id] = getattr(state, field)
+        return samps
+
+    def sample_quantiles(
+        self,
+        initial_state: State,
+        initial_t: int,
+        days: list[int],
+        quantiles: list[int],
+        num_samples: int,
+    ) -> torch.Tensor:
+        "Returns a tensor with axes [day, region, SEITURD, quantile]."
+        samps = self.many_samples(
+            initial_state,
+            initial_t,
+            days,
+            num_samples=num_samples,
+        )
+        return torch.quantile(samps, quantiles, dim=3)
 
     # The states are Markov; that is, transitions depend only on the current
     # state. prob_X_Y gives the probability for a member of the population at
@@ -201,72 +229,56 @@ class SeiturdModel(nn.Module):
     #        \->U
     # Note: I contributes to (U,T) and T contributes to (R,D)
 
-    # NOTE: We are currently assuming that people in the T state are not
-    # contagious, i.e., eps_{i,t} = 0.
-    def prob_S_E(self, I_t: torch.Tensor, N: torch.Tensor, t: int) -> torch.Tensor:
-        """
-        The fraction of ``S`` that is transformed into ``E``.
-
-        Args:
-          I_t (torch.Tensor): infected population ``I`` at time ``t``,
-            of shape ``(num_regions,)``
-          N (torch.Tensor): total population in each region
-            (shape ``[num_regions]``)
-          t (int): time index
-
-        Returns:
-          amount of ``S`` that changes into ``E``, of shape `(n_regions,)
-        """
-        # contagion_I is (n_days, num_regions)
-        # adjacency_matrix is (n_regions, num_regions)
-
-        infectious_pops = self.contagion_I[t] * (self.adjacency_matrix @ I_t)
-        total_pops = self.adjacency_matrix @ N
-        return -torch.expm1(-infectious_pops / total_pops)
-
     # These prob_* functions return "something that can broadcast with an
     # array of shape [num_regions]": prob_S_E actually varies per region
     # and so returns shape [num_regions], but the others currently don't and
     # so return shape [1].
 
-    def prob_E_I(self) -> torch.Tensor:
-        return self.decay_E.unsqueeze(0)
+    # NOTE: We are currently assuming that people in the T state are not
+    # contagious, i.e., eps_{i,t} = 0.
+    def probs_from_S(self, state: State, t: int) -> torch.Tensor:
+        # S to E
+        # contagion_I is (n_days, num_regions)
+        # adjacency_matrix is (n_regions, num_regions)
 
-    def prob_I_out(self) -> torch.Tensor:  # I->T or I->U
-        return self.decay_I.unsqueeze(0)
+        infectious_pops = self.contagion_I[t] * (self.adjacency_matrix @ state.I)
+        total_pops = self.adjacency_matrix @ state.N
+        return -torch.expm1(-infectious_pops / total_pops).unsqueeze(1)
 
-    def prob_I_T(self, t: int) -> torch.Tensor:
-        return self.detection_rate[t] * self.prob_I_out()
+    def probs_from_E(self, state: State, t: int) -> torch.Tensor:
+        # E to I
+        return self.decay_E.unsqueeze(0).unsqueeze(1)
 
-    def prob_I_U(self, t: int) -> torch.Tensor:
-        return (1 - self.detection_rate[t]) * self.prob_I_out()
+    def probs_from_I(self, state: State, t: int) -> torch.Tensor:
+        # I to T,U
+        prob_I_out = self.decay_I.unsqueeze(0).unsqueeze(1)  # [1, 1]
+        detection_rate = self.detection_rate[t]  # [num_regions]
+        return prob_I_out * torch.stack([detection_rate, 1 - detection_rate], dim=1)
 
-    def prob_T_out(self) -> torch.Tensor:  # T->R or T->D
-        return self.decay_T.unsqueeze(0)
+    def probs_from_T(self, state: State, t: int) -> torch.Tensor:
+        # T to R,D
+        prob_T_out = self.decay_T.unsqueeze(0).unsqueeze(1)
+        recovery_rate = self.recovery_rate[t]  # [num_regions]
+        return prob_T_out * torch.stack([recovery_rate, 1 - recovery_rate], dim=1)
 
-    def prob_T_R(self, t: int) -> torch.Tensor:
-        return self.recovery_rate[t] * self.prob_T_out()
+    _probs_from_fn = {
+        "S": probs_from_S,
+        "E": probs_from_E,
+        "I": probs_from_I,
+        "T": probs_from_T,
+    }
 
-    def prob_T_D(self, t: int) -> torch.Tensor:
-        return (1.0 - self.recovery_rate[t]) * self.prob_T_out()
+    def probs_from(self, compartment: str, state: State, t: int):
+        return self._probs_from_fn[compartment](self, state, t)
 
-    # Distributions of population flows
-    def flow_from_S(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        p = self.prob_S_E(state.I, state.N, t).unsqueeze(1)
-        return flow_multinomial(state.S, p)
-
-    def flow_from_E(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        # t is only included to keep the interface uniform, it's not used
-        p = self.prob_E_I().unsqueeze(1)
-        return flow_multinomial(state.E, p)
-
-    def flow_from_I(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        p = torch.stack([self.prob_I_T(t), self.prob_I_U(t)], dim=1)
-        return flow_multinomial(state.I, p)
-
-    def flow_from_T(self, state: State, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        p = torch.stack([self.prob_T_R(t), self.prob_T_D(t)], dim=1)
-        return flow_multinomial(state.T, p)
+    def flow_from(
+        self, compartment: str, state: State, t: int, fudge: float = 1e-7
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return flow_multinomial(
+            getattr(state, compartment),
+            self.probs_from(compartment, state, t),
+            fudge=fudge,
+        )
 
 
 def flow_multinomial(

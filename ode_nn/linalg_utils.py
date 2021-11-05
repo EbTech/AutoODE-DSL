@@ -15,6 +15,16 @@ class UnivariateNormal:
         zsq = (value - self.means) ** 2 * self.precisions
         return -0.5 * (zsq - torch.log(self.precisions) + LOG_2PI)
 
+    def sample(self, sample_shape=torch.Size()):
+        if not isinstance(sample_shape, torch.Size):
+            sample_shape = torch.Size(sample_shape)
+        shape = sample_shape + self.means.shape
+
+        with torch.no_grad():
+            return torch.normal(self.means.expand(shape), 1) / self.precisions.expand(
+                shape
+            )
+
 
 class BivariateNormal:
     def __init__(self, loc, covariance_matrix):
@@ -39,6 +49,8 @@ class BivariateNormal:
             .squeeze(1)
         )
         return -0.5 * (z + torch.log(self.determinants)) - LOG_2PI
+
+    # TODO: implement sample() allowing for singular covariance
 
 
 class TrivariateNormal:
@@ -73,3 +85,5 @@ class TrivariateNormal:
             .squeeze(1)
         )
         return -0.5 * (z + torch.log(self.determinants) + 3 * LOG_2PI)
+
+    # TODO: implement sample() allowing for singular covariance
