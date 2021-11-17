@@ -6,6 +6,7 @@ and physical parameters that model the spread of COVID-19.
 from __future__ import annotations
 
 from typing import Optional, Tuple
+import warnings
 
 import numpy as np
 import torch
@@ -14,6 +15,21 @@ from torch.distributions import Multinomial
 
 from .history import Flows, History, State
 from .linalg_utils import BivariateNormal, UnivariateNormal
+
+class TransformedTensor:
+    def __init__(self, base, func):
+        self.base = base
+        self.func = func
+
+    def __getitem__(self, *args):
+        return self.func(self.base[args])
+
+    def evaluate(self):
+        # is there a magic method for this?
+        return self.func(self.base)
+
+    def __getattr__(self, name):
+        return getattr(self.evaluate(), name)
 
 
 class SeiturdModel(nn.Module):
@@ -77,40 +93,57 @@ class SeiturdModel(nn.Module):
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
         self.logit_decay_E = nn.Parameter(torch.logit(torch.rand([])))
+        self.decay_E = TransformedTensor(self.logit_decay_E, torch.sigmoid)
+
         # lambda_I = rate of I -> {T, U} transition
         self.logit_decay_I = nn.Parameter(torch.logit(torch.rand([])))
+        self.decay_I = TransformedTensor(self.logit_decay_I, torch.sigmoid)
+
         # lambda_T = rate of T -> {R, D} transition
         self.logit_decay_T = nn.Parameter(torch.logit(torch.rand([])))
+        self.decay_T = TransformedTensor(self.logit_decay_T, torch.sigmoid)
 
         # d_i = detection rate
         self.logit_detection_rate = nn.Parameter(
             torch.logit(torch.rand((num_days, num_regions)))
         )
+        self.detection_rate = TransformedTensor(self.logit_detection_rate, torch.sigmoid)
+
         # r_{i,t} = recovery rate
         self.logit_recovery_rate = nn.Parameter(
             torch.logit(torch.rand((num_days, num_regions)))
         )
+        self.recovery_rate = TransformedTensor(self.logit_recovery_rate, torch.sigmoid)
+
         # beta_{i,t} = number of potentially-contagious interactions per day
         self.log_contagion_I = nn.Parameter(
             torch.log(torch.rand((num_days, num_regions)))
         )
+        self.contagion_I = TransformedTensor(self.log_contagion_I, torch.exp)
+
         # eps_{i,t} = number of potentially-contagious interactions with T
         #             people per day; should be low if T people stay home,
         #             so for now just removing from model and clamping to 0
-        # self.logit_contagion_T = nn.Parameter(
-        #    torch.logit(torch.rand((num_days, num_regions)))
+        # self.log_contagion_T = nn.Parameter(
+        #    torch.log(torch.rand((num_days, num_regions)))
         # )
+        # self.contagion_T = TransformedTensor(self.log_contagion_T, torch.exp)
+
         # A_{i,j} = relative frequency of interaction across regions
         #           -- for now, we're just using self.adjacency_matrix
         # self.connectivity = nn.Parameter(torch.eye(num_regions))
 
-    decay_E = property(lambda self: torch.sigmoid(self.logit_decay_E))
-    decay_I = property(lambda self: torch.sigmoid(self.logit_decay_I))
-    decay_T = property(lambda self: torch.sigmoid(self.logit_decay_T))
-    detection_rate = property(lambda self: torch.sigmoid(self.logit_detection_rate))
-    recovery_rate = property(lambda self: torch.sigmoid(self.logit_recovery_rate))
-    contagion_I = property(lambda self: torch.exp(self.log_contagion_I))
-    # contagion_T = property(lambda self: torch.exp(self.log_contagion_T))
+
+    def detection_p(self, t):
+        return self.detection_rate[t] if t < self.num_days else self.detection_rate[-1]
+
+    def recovery_p(self, t):
+        return self.recovery_rate[t] if t < self.num_days else self.recovery_rate[-1]
+
+    def contagion_I_p(self, t):
+        return self.contagion_I[t] if t < self.num_days else self.contagion_I[-1]
+
+
 
     def log_prob(self, history: History) -> torch.Tensor:
         assert self.num_days == history.num_days
@@ -148,20 +181,22 @@ class SeiturdModel(nn.Module):
         therefore only looks at the *last* day of ``history``.
         """
 
-        def do_sampling(ns, ps):
-            """
-            ps and the return value both have shape [num_regions, out_degree]
-            """
-            probs = torch.cat((ps, 1 - ps.sum(1, keepdim=True)), dim=1)
-            dist = Multinomial(ns, probs=probs)
-            return dist.sample().t()[:-1]
+        S_dist = UnivariateNormal(*self.flow_from("S", state, t))
+        S_E = S_dist.sample().squeeze(0)
 
-        (S_E,) = do_sampling(state.S, self.probs_from_S(state, t))
-        (E_I,) = do_sampling(state.E, self.probs_from_E(state, t))
-        I_T, I_U = do_sampling(state.I, self.probs_from_I(state, t))
-        T_R, T_D = do_sampling(state.T, self.probs_from_T(state, t))
+        E_dist = UnivariateNormal(*self.flow_from("E", state, t))
+        E_I = E_dist.sample().squeeze(0)
+
+        I_dist = BivariateNormal(*self.flow_from("I", state, t))
+        I_T, I_U = I_dist.sample().squeeze(0).t()
+
+        T_dist = BivariateNormal(*self.flow_from("T", state, t))
+        T_R, T_D = T_dist.sample().squeeze(0).t()
 
         flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
+        if flows.any_negative():
+            warnings.warn("Negative flow :(")
+
         return state.add_flow(flows)
 
     def sample_forward(
@@ -195,6 +230,7 @@ class SeiturdModel(nn.Module):
         samps = np.empty(
             (len(days), self.num_regions, len(History.fields), num_samples)
         )
+        # TODO: should we avoid wrapping into a History object and then unwrapping?
         for sample_id in range(num_samples):
             history = self.sample_forward(initial_state, initial_t, max_day)
             for day_id, day in enumerate(days):
@@ -241,7 +277,7 @@ class SeiturdModel(nn.Module):
         # contagion_I is (n_days, num_regions)
         # adjacency_matrix is (n_regions, num_regions)
 
-        infectious_pops = self.contagion_I[t] * (self.adjacency_matrix @ state.I)
+        infectious_pops = self.contagion_I_p(t) * (self.adjacency_matrix @ state.I)
         total_pops = self.adjacency_matrix @ state.N
         return -torch.expm1(-infectious_pops / total_pops).unsqueeze(1)
 
@@ -252,13 +288,13 @@ class SeiturdModel(nn.Module):
     def probs_from_I(self, state: State, t: int) -> torch.Tensor:
         # I to T,U
         prob_I_out = self.decay_I.unsqueeze(0).unsqueeze(1)  # [1, 1]
-        detection_rate = self.detection_rate[t]  # [num_regions]
+        detection_rate = self.detection_p(t)  # [num_regions]
         return prob_I_out * torch.stack([detection_rate, 1 - detection_rate], dim=1)
 
     def probs_from_T(self, state: State, t: int) -> torch.Tensor:
         # T to R,D
         prob_T_out = self.decay_T.unsqueeze(0).unsqueeze(1)
-        recovery_rate = self.recovery_rate[t]  # [num_regions]
+        recovery_rate = self.recovery_p(t)  # [num_regions]
         return prob_T_out * torch.stack([recovery_rate, 1 - recovery_rate], dim=1)
 
     _probs_from_fn = {
@@ -275,7 +311,7 @@ class SeiturdModel(nn.Module):
         self, compartment: str, state: State, t: int, fudge: float = 1e-7
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return flow_multinomial(
-            getattr(state, compartment),
+            state[compartment],
             self.probs_from(compartment, state, t),
             fudge=fudge,
         )

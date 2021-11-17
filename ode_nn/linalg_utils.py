@@ -15,21 +15,17 @@ class UnivariateNormal:
         zsq = (value - self.means) ** 2 * self.precisions
         return -0.5 * (zsq - torch.log(self.precisions) + LOG_2PI)
 
-    def sample(self, sample_shape=torch.Size()):
-        if not isinstance(sample_shape, torch.Size):
-            sample_shape = torch.Size(sample_shape)
-        shape = sample_shape + self.means.shape
-
+    def sample(self, n=1):
         with torch.no_grad():
-            return torch.normal(self.means.expand(shape), 1) / self.precisions.expand(
-                shape
-            )
+            zs = torch.randn(n, *self.means.shape)
+            return zs / self.precisions.sqrt().unsqueeze(0) + self.means.unsqueeze(0)
 
 
 class BivariateNormal:
     def __init__(self, loc, covariance_matrix):
         # TODO: should check that things are reasonable, but I'm lazy
         self.means = loc
+        self.covariance_matrices = covariance_matrix
 
         a = covariance_matrix[:, 0, 0]
         b = covariance_matrix[:, 0, 1]
@@ -43,14 +39,25 @@ class BivariateNormal:
 
     def log_prob(self, value):
         deltas = value - self.means
-        z = (
-            (deltas.unsqueeze(1) @ self.precision_matrices @ deltas.unsqueeze(2))
-            .squeeze(2)
-            .squeeze(1)
-        )
-        return -0.5 * (z + torch.log(self.determinants)) - LOG_2PI
+        z = deltas.unsqueeze(1) @ self.precision_matrices @ deltas.unsqueeze(2)
+        return -0.5 * (z.squeeze(2).squeeze(1) + self.determinants.log()) - LOG_2PI
 
-    # TODO: implement sample() allowing for singular covariance
+    def get_choleskies(self):
+        a = self.covariance_matrices[:, 0, 0]
+        b = self.covariance_matrices[:, 0, 1]
+        d = self.covariance_matrices[:, 1, 1]
+        zeros = torch.zeros_like(a)
+        sqrt_a = a.sqrt()
+        return torch.stack(
+            [sqrt_a, b / sqrt_a, zeros, (d - b.square() / a).sqrt()], 1
+        ).reshape(a.shape[0], 2, 2)
+
+    def sample(self, n=1):
+        with torch.no_grad():
+            zs = torch.randn(n, *self.means.shape)
+            Us = self.get_choleskies()
+            U_zs = Us.transpose(2, 1).unsqueeze(0) @ zs.unsqueeze(-1)
+            return U_zs.squeeze(-1) + self.means.unsqueeze(0)
 
 
 class TrivariateNormal:
@@ -86,4 +93,4 @@ class TrivariateNormal:
         )
         return -0.5 * (z + torch.log(self.determinants) + 3 * LOG_2PI)
 
-    # TODO: implement sample() allowing for singular covariance
+    # TODO: implement sample()

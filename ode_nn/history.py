@@ -34,6 +34,12 @@ class State(NamedTuple):
         """Total population"""
         return sum(self)
 
+    def __getitem__(self, compartment):
+        try:
+            return getattr(self, compartment)  # self.S or similar
+        except AttributeError:
+            raise KeyError(f"no compartment named {compartment!r}")
+
     # As the transition model is a tree, flows are uniquely determined by delta,
     # since both have one fewer degree of freedom than the number of states.
     # To infer flows, proceed by eliminating one leaf at a time.
@@ -68,6 +74,18 @@ class Flows(NamedTuple):
     I_U: torch.Tensor
     T_R: torch.Tensor
     T_D: torch.Tensor
+
+    def __getitem__(self, compartment):
+        try:
+            return getattr(self, compartment)  # self.S or similar
+        except AttributeError:
+            raise KeyError(f"no compartment named {compartment!r}")
+
+    def any_negative(self):
+        for field in self._fields:
+            if (self[field] < 0).any():
+                return True
+        return False
 
 
 class BaseHistory(torch.nn.Module):
