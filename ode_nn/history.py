@@ -67,6 +67,14 @@ class State(NamedTuple):
         return State(S=S, E=E, I=I, T=T, U=U, R=R, D=D)
 
 
+FLOWS_GRAPH = {
+    "S": ["S_E"],
+    "E": ["E_I"],
+    "I": ["I_T", "I_U"],
+    "T": ["T_R", "T_D"],
+}
+
+
 class Flows(NamedTuple):
     S_E: torch.Tensor
     E_I: torch.Tensor

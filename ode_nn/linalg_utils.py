@@ -18,7 +18,9 @@ class UnivariateNormal:
     def sample(self, n=1):
         with torch.no_grad():
             zs = torch.randn(n, *self.means.shape)
-            return zs / self.precisions.sqrt().unsqueeze(0) + self.means.unsqueeze(0)
+            ret = zs / self.precisions.sqrt().unsqueeze(0) + self.means.unsqueeze(0)
+            return ret.unsqueeze(-1)
+            # return shape [n, *means.shape, 1] for consistency with Bi/Trivariate
 
 
 class BivariateNormal:
@@ -43,6 +45,12 @@ class BivariateNormal:
         return -0.5 * (z.squeeze(2).squeeze(1) + self.determinants.log()) - LOG_2PI
 
     def get_choleskies(self):
+        # TODO: would be good to cache this. theoretically, though,
+        #       we might want to call it either with gradients (for some reason)
+        #       or without gradients (for sampling), and plain caching wouldn't
+        #       handle this global state; since we only call it more than once
+        #       when we do rejection sampling, and it's not that big a deal,
+        #       not bothering for now.
         a = self.covariance_matrices[:, 0, 0]
         b = self.covariance_matrices[:, 0, 1]
         d = self.covariance_matrices[:, 1, 1]

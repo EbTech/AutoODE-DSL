@@ -12,10 +12,10 @@ import warnings
 import numpy as np
 import torch
 from torch import nn
-from torch.distributions import Multinomial
+from torch.distributions import Dirichlet
 
-from .history import Flows, History, State
-from .linalg_utils import BivariateNormal, UnivariateNormal
+from .history import Flows, History, State, FLOWS_GRAPH
+from .linalg_utils import BivariateNormal, TrivariateNormal, UnivariateNormal
 
 
 class TransformedTensor:
@@ -159,10 +159,40 @@ class BaseSeiturdModel(nn.Module):
         return total.mean() / (len(history) - 1)
 
     def flow_log_prob(self, flows: Flows, state: State, t: int) -> torch.Tensor:
-        raise NotImplementedError("subclass should implement flow_log_prob")
+        logp = 0
+        for compartment, out_flows in FLOWS_GRAPH.items():
+            ns = state[compartment]
+            probs = self.probs_from(compartment, state, t)
+            values = torch.stack([getattr(flows, name) for name in out_flows], 1)
+            logp += self.log_prob_for_flow(ns, probs, values)
+        return logp
+
+    def log_prob_for_flow(
+        self,
+        ns: torch.Tensor,
+        probs: torch.Tensor,
+        flow_vals: torch.Tensor,
+    ):
+        raise NotImplementedError("subclass should implement log_prob_for_flow")
 
     def sample_one_step(self, state: State, t: int) -> State:
-        raise NotImplementedError("subclass should implement sample_one_step")
+        """
+        Runs the model from ``history``; this model is Markov and
+        therefore only looks at the *last* day of ``history``.
+        """
+        with torch.no_grad():
+            flow_dict = {}
+            for compartment, out_flows in FLOWS_GRAPH.items():
+                ns = state[compartment]
+                probs = self.probs_from(compartment, state, t)
+                values = self.sample_one_flow(ns, probs).squeeze(0).t()
+                for name, val in zip(out_flows, values):
+                    flow_dict[name] = val
+
+            return state.add_flow(Flows(**flow_dict))
+
+    def sample_one_flow(self, ns: torch.Tensor, probs: torch.Tensor):
+        raise NotImplementedError("subclass should implement sample_one_flow")
 
     def sample_forward(
         self,
@@ -274,77 +304,105 @@ class BaseSeiturdModel(nn.Module):
     def probs_from(self, compartment: str, state: State, t: int):
         return self._probs_from_fn[compartment](self, state, t)
 
-    def flow_moments_from(
-        self, compartment: str, state: State, t: int, fudge: float = 1e-7
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return flow_multinomial_moments(
-            state[compartment],
-            self.probs_from(compartment, state, t),
-            fudge=fudge,
-        )
-
 
 class SeiturdModelNormalsRejectionNaive(BaseSeiturdModel):
     """
-    A SEITURD model using plain normal likelihoods,
+    A SEITURD model using plain normal likelihoods moment-matched to the multinomial,
     and rejection sampling for sampling to avoid negative flows.
     Thus the probability density and sampling do *not* agree with one another.
     """
 
-    def flow_log_prob(self, flows: Flows, state: State, t: int) -> torch.Tensor:
-        logp = 0
+    _cls_lookup = {1: UnivariateNormal, 2: BivariateNormal, 3: TrivariateNormal}
 
-        # TODO: these and the flow_from_* functions should be made generic,
-        # by keeping a dictionary or something of what the flows are
-        S_dist = UnivariateNormal(*self.flow_moments_from("S", state, t))
-        logp += S_dist.log_prob(flows.S_E.unsqueeze(1))
+    def get_dist(self, ns: torch.Tensor, probs: torch.Tensor, fudge: float = 1e-7):
+        means, vars = multinomial_moments(ns, probs, fudge=fudge)
+        return self._cls_lookup[probs.shape[-1]](means, vars)
 
-        E_dist = UnivariateNormal(*self.flow_moments_from("E", state, t))
-        logp += E_dist.log_prob(flows.E_I.unsqueeze(1))
+    def log_prob_for_flow(
+        self,
+        ns: torch.Tensor,
+        probs: torch.Tensor,
+        flow_vals: torch.Tensor,
+        fudge: float = 1e-7,
+    ):
+        return self.get_dist(ns, probs, fudge).log_prob(flow_vals)
 
-        I_dist = BivariateNormal(*self.flow_moments_from("I", state, t))
-        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U), 1))
-
-        T_dist = BivariateNormal(*self.flow_moments_from("T", state, t))
-        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D), 1))
-
-        return logp
-
-    def _sample_until_pos(self, dist):
+    def sample_one_flow(
+        self, ns: torch.Tensor, probs: torch.Tensor, fudge: float = 1e-7
+    ):
+        dist = self.get_dist(ns, probs, fudge)
         while True:
             bits = dist.sample()
-            if all((bit > 0).all() for bit in bits):
-                return bits
+            if (bits >= 0).all():
+                return bits.squeeze(0)
 
-    def sample_one_step(self, state: State, t: int) -> State:
-        """
-        Runs the model from ``history``; this model is Markov and
-        therefore only looks at the *last* day of ``history``.
-        """
-        with torch.no_grad():
-            S_dist = UnivariateNormal(*self.flow_moments_from("S", state, t))
-            S_E = self._sample_until_pos(S_dist).squeeze(0)
 
-            E_dist = UnivariateNormal(*self.flow_moments_from("E", state, t))
-            E_I = self._sample_until_pos(E_dist).squeeze(0)
+class SeiturdModelDirichlet(BaseSeiturdModel):
+    """
+    A SEITURD model using scaled Dirichlet distributions
+    moment-matched to the multinomials.
 
-            I_dist = BivariateNormal(*self.flow_moments_from("I", state, t))
-            I_T, I_U = self._sample_until_pos(I_dist).squeeze(0).t()
+    Specifically, for a Multinomial(n, p) with p a vector of length k,
+    we use  n D where D ~ Dirichlet(s p), with s described in a moment;
+    this has mean as desired
+      E[n D] = n * s p / sum(s p) = n p,
+    and covariance
+      Cov(n D) = n^2 (diag(p) - p p^T) / (sum(s p) + 1)
+               = n^2 (diag(p) - p p^T) / (s + 1)
+               = n (diag(p) - p p^T) * n/(s+1).
+    When (as usual) n > 1,
+    we pick s = n - 1 to get an exact moment match to the multinomial distribution.
+    If n <= 1 -- recall HistoryWithSoftmax only enforces n > 0 -- this isn't possible.
+    So we instead use s = max(n - 1, eps),
+    so that for n <= 1 + eps the variances are all off by a factor of n/(1+eps).
+    I'm not too worried about it; this is easiest, and shouldn't be too common.
+    The support is in any case is x_i in (0, n) with sum(x_i) = n.
 
-            T_dist = BivariateNormal(*self.flow_moments_from("T", state, t))
-            T_R, T_D = self._sample_until_pos(T_dist).squeeze(0).t()
+    XXX: CURRENTLY DOES NOT WORK.
+         That is, it probably *would* work, except that when we initialize
+         the flows, it actually starts out with negative flows,
+         which aren't in the support of a Dirichlet. 😅
+    """
 
-            flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
-            if flows.any_negative():
-                warnings.warn("Negative flow :(")
+    def get_D_dist(
+        self,
+        ns: torch.Tensor,
+        probs: torch.Tensor,
+        eps: float = 0.01,
+        min_alpha: float = 1e-7,
+    ):
+        # pad things out with the "self-flow"
+        probs = torch.cat((probs, 1 - probs.sum(-1, keepdims=True)), -1)
 
-            return state.add_flow(flows)
+        s_vals = (ns - 1).clamp(min=eps)
+        alphas = (s_vals.unsqueeze(1) * probs).clamp(min=min_alpha)
+        return Dirichlet(alphas)
+
+    def log_prob_for_flow(
+        self,
+        ns: torch.Tensor,
+        probs: torch.Tensor,  # shape [n_regions, n_flows]
+        flow_vals: torch.Tensor,
+        **kwargs
+    ):
+        # pad things out with the "self-flow"
+        self_flows = ns.unsqueeze(-1) - flow_vals.sum(-1, keepdims=True)
+        flow_vals = torch.cat((flow_vals, self_flows), -1)
+
+        D_dist = self.get_D_dist(ns, probs, **kwargs)
+        # change of variables: density of n D is 1/n times relevant density of D
+        flow_Ds = flow_vals / ns.unsqueeze(-1)
+        return D_dist.log_prob(flow_Ds) - torch.log(ns)
+
+    def sample_one_flow(self, ns: torch.Tensor, probs: torch.Tensor, **kwargs):
+        Ds = self.get_D_dist(ns, probs, **kwargs).sample()
+        return ns.unsqueeze(0).unsqueeze(-1) * Ds
 
 
 SeiturdModel = SeiturdModelNormalsRejectionNaive  # default implementation
 
 
-def flow_multinomial_moments(
+def multinomial_moments(
     n: torch.Tensor, p: torch.Tensor, fudge: float = 1e-7
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -359,6 +417,9 @@ def flow_multinomial_moments(
       - mean of shape [n_regions, n_outs]
       - cov of shape [n_regions, n_outs, n_outs]
     """
+    if (n < 0).detach().any():
+        raise ValueError("negative n")
+
     mean = n.unsqueeze(1) * p
     p_outer = p.unsqueeze(2) * p.unsqueeze(1)
     cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
