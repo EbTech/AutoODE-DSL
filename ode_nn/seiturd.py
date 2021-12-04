@@ -5,6 +5,7 @@ and physical parameters that model the spread of COVID-19.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Optional, Tuple
 import warnings
 
@@ -15,6 +16,7 @@ from torch.distributions import Multinomial
 
 from .history import Flows, History, State
 from .linalg_utils import BivariateNormal, UnivariateNormal
+
 
 class TransformedTensor:
     def __init__(self, base, func):
@@ -30,6 +32,9 @@ class TransformedTensor:
 
     def __getattr__(self, name):
         return getattr(self.evaluate(), name)
+
+
+SigmoidTensor = partial(TransformedTensor, func=torch.sigmoid)
 
 
 class SeiturdModel(nn.Module):
@@ -93,27 +98,27 @@ class SeiturdModel(nn.Module):
         # TODO: initialize parameters to typical values & scales
         # lambda_E = rate of E -> I transition
         self.logit_decay_E = nn.Parameter(torch.logit(torch.rand([])))
-        self.decay_E = TransformedTensor(self.logit_decay_E, torch.sigmoid)
+        self.decay_E = SigmoidTensor(self.logit_decay_E)
 
         # lambda_I = rate of I -> {T, U} transition
         self.logit_decay_I = nn.Parameter(torch.logit(torch.rand([])))
-        self.decay_I = TransformedTensor(self.logit_decay_I, torch.sigmoid)
+        self.decay_I = SigmoidTensor(self.logit_decay_I)
 
         # lambda_T = rate of T -> {R, D} transition
         self.logit_decay_T = nn.Parameter(torch.logit(torch.rand([])))
-        self.decay_T = TransformedTensor(self.logit_decay_T, torch.sigmoid)
+        self.decay_T = SigmoidTensor(self.logit_decay_T)
 
         # d_i = detection rate
         self.logit_detection_rate = nn.Parameter(
             torch.logit(torch.rand((num_days, num_regions)))
         )
-        self.detection_rate = TransformedTensor(self.logit_detection_rate, torch.sigmoid)
+        self.detection_rate = SigmoidTensor(self.logit_detection_rate)
 
         # r_{i,t} = recovery rate
         self.logit_recovery_rate = nn.Parameter(
             torch.logit(torch.rand((num_days, num_regions)))
         )
-        self.recovery_rate = TransformedTensor(self.logit_recovery_rate, torch.sigmoid)
+        self.recovery_rate = SigmoidTensor(self.logit_recovery_rate)
 
         # beta_{i,t} = number of potentially-contagious interactions per day
         self.log_contagion_I = nn.Parameter(
@@ -327,6 +332,7 @@ def flow_multinomial(
       - n, number of trials, of shape [n_regions]
       - p, probabilities, of shape [n_regions, n_outs].
         p should be nonnegative, and sum to at most 1.
+      - fudge, scalar to add to covariance diagonals to ensure it's p.d.
     Returns:
       - mean of shape [n_regions, n_outs]
       - cov of shape [n_regions, n_outs, n_outs]
@@ -334,8 +340,5 @@ def flow_multinomial(
     mean = n.unsqueeze(1) * p
     p_outer = p.unsqueeze(2) * p.unsqueeze(1)
     cov = torch.diag_embed(mean) - n[:, np.newaxis, np.newaxis] * p_outer
-    cov = (
-        cov
-        + fudge * torch.eye(cov.shape[1], out=torch.empty_like(cov))[np.newaxis, :, :]
-    )  # blegh
-    return mean, cov
+    fud_m = fudge * torch.eye(cov.shape[1], out=torch.empty_like(cov))[np.newaxis, :, :]
+    return mean, cov + fud_m
