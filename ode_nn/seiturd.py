@@ -37,7 +37,7 @@ class TransformedTensor:
 SigmoidTensor = partial(TransformedTensor, func=torch.sigmoid)
 
 
-class SeiturdModel(nn.Module):
+class BaseSeiturdModel(nn.Module):
     """
     A model for the Covid-19 pandemic given seven different populations
     in a compartment model:
@@ -138,7 +138,6 @@ class SeiturdModel(nn.Module):
         #           -- for now, we're just using self.adjacency_matrix
         # self.connectivity = nn.Parameter(torch.eye(num_regions))
 
-
     def detection_p(self, t):
         return self.detection_rate[t] if t < self.num_days else self.detection_rate[-1]
 
@@ -147,8 +146,6 @@ class SeiturdModel(nn.Module):
 
     def contagion_I_p(self, t):
         return self.contagion_I[t] if t < self.num_days else self.contagion_I[-1]
-
-
 
     def log_prob(self, history: History) -> torch.Tensor:
         assert self.num_days == history.num_days
@@ -162,47 +159,10 @@ class SeiturdModel(nn.Module):
         return total.mean() / (len(history) - 1)
 
     def flow_log_prob(self, flows: Flows, state: State, t: int) -> torch.Tensor:
-        logp = 0
-
-        # TODO: these and the flow_from_* functions should be made generic,
-        # by keeping a dictionary or something of what the flows are
-        S_dist = UnivariateNormal(*self.flow_from("S", state, t))
-        logp += S_dist.log_prob(flows.S_E.unsqueeze(1))
-
-        E_dist = UnivariateNormal(*self.flow_from("E", state, t))
-        logp += E_dist.log_prob(flows.E_I.unsqueeze(1))
-
-        I_dist = BivariateNormal(*self.flow_from("I", state, t))
-        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U), 1))
-
-        T_dist = BivariateNormal(*self.flow_from("T", state, t))
-        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D), 1))
-
-        return logp
+        raise NotImplementedError("subclass should implement flow_log_prob")
 
     def sample_one_step(self, state: State, t: int) -> State:
-        """
-        Runs the model from ``history``; this model is Markov and
-        therefore only looks at the *last* day of ``history``.
-        """
-
-        S_dist = UnivariateNormal(*self.flow_from("S", state, t))
-        S_E = S_dist.sample().squeeze(0)
-
-        E_dist = UnivariateNormal(*self.flow_from("E", state, t))
-        E_I = E_dist.sample().squeeze(0)
-
-        I_dist = BivariateNormal(*self.flow_from("I", state, t))
-        I_T, I_U = I_dist.sample().squeeze(0).t()
-
-        T_dist = BivariateNormal(*self.flow_from("T", state, t))
-        T_R, T_D = T_dist.sample().squeeze(0).t()
-
-        flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
-        if flows.any_negative():
-            warnings.warn("Negative flow :(")
-
-        return state.add_flow(flows)
+        raise NotImplementedError("subclass should implement sample_one_step")
 
     def sample_forward(
         self,
@@ -218,10 +178,11 @@ class SeiturdModel(nn.Module):
 
         (The new history uses the same device as ``initial_state``.)
         """
-        states = [initial_state]
-        for i in range(num_days):
-            states.append(self.sample_one_step(states[-1], initial_t + i + 1))
-        return History.from_states(states)
+        with torch.no_grad():
+            states = [initial_state]
+            for i in range(num_days):
+                states.append(self.sample_one_step(states[-1], initial_t + i + 1))
+            return History.from_states(states)
 
     def many_samples(
         self,
@@ -231,18 +192,19 @@ class SeiturdModel(nn.Module):
         num_samples: int,
     ) -> torch.Tensor:
         "Returns a tensor with axes [day, region, SEITURD, sample_idx]."
-        max_day = max(days)
-        samps = np.empty(
-            (len(days), self.num_regions, len(History.fields), num_samples)
-        )
-        # TODO: should we avoid wrapping into a History object and then unwrapping?
-        for sample_id in range(num_samples):
-            history = self.sample_forward(initial_state, initial_t, max_day)
-            for day_id, day in enumerate(days):
-                state = history[day]
-                for field_id, field in enumerate(History.fields):
-                    samps[day_id, :, field_id, sample_id] = getattr(state, field)
-        return samps
+        with torch.no_grad():
+            max_day = max(days)
+            samps = np.empty(
+                (len(days), self.num_regions, len(History.fields), num_samples)
+            )
+            # TODO: should we avoid wrapping into a History object and then unwrapping?
+            for sample_id in range(num_samples):
+                history = self.sample_forward(initial_state, initial_t, max_day)
+                for day_id, day in enumerate(days):
+                    state = history[day]
+                    for field_id, field in enumerate(History.fields):
+                        samps[day_id, :, field_id, sample_id] = getattr(state, field)
+            return samps
 
     def sample_quantiles(
         self,
@@ -312,17 +274,77 @@ class SeiturdModel(nn.Module):
     def probs_from(self, compartment: str, state: State, t: int):
         return self._probs_from_fn[compartment](self, state, t)
 
-    def flow_from(
+    def flow_moments_from(
         self, compartment: str, state: State, t: int, fudge: float = 1e-7
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return flow_multinomial(
+        return flow_multinomial_moments(
             state[compartment],
             self.probs_from(compartment, state, t),
             fudge=fudge,
         )
 
 
-def flow_multinomial(
+class SeiturdModelNormalsRejectionNaive(BaseSeiturdModel):
+    """
+    A SEITURD model using plain normal likelihoods,
+    and rejection sampling for sampling to avoid negative flows.
+    Thus the probability density and sampling do *not* agree with one another.
+    """
+
+    def flow_log_prob(self, flows: Flows, state: State, t: int) -> torch.Tensor:
+        logp = 0
+
+        # TODO: these and the flow_from_* functions should be made generic,
+        # by keeping a dictionary or something of what the flows are
+        S_dist = UnivariateNormal(*self.flow_moments_from("S", state, t))
+        logp += S_dist.log_prob(flows.S_E.unsqueeze(1))
+
+        E_dist = UnivariateNormal(*self.flow_moments_from("E", state, t))
+        logp += E_dist.log_prob(flows.E_I.unsqueeze(1))
+
+        I_dist = BivariateNormal(*self.flow_moments_from("I", state, t))
+        logp += I_dist.log_prob(torch.stack((flows.I_T, flows.I_U), 1))
+
+        T_dist = BivariateNormal(*self.flow_moments_from("T", state, t))
+        logp += T_dist.log_prob(torch.stack((flows.T_R, flows.T_D), 1))
+
+        return logp
+
+    def _sample_until_pos(self, dist):
+        while True:
+            bits = dist.sample()
+            if all((bit > 0).all() for bit in bits):
+                return bits
+
+    def sample_one_step(self, state: State, t: int) -> State:
+        """
+        Runs the model from ``history``; this model is Markov and
+        therefore only looks at the *last* day of ``history``.
+        """
+        with torch.no_grad():
+            S_dist = UnivariateNormal(*self.flow_moments_from("S", state, t))
+            S_E = self._sample_until_pos(S_dist).squeeze(0)
+
+            E_dist = UnivariateNormal(*self.flow_moments_from("E", state, t))
+            E_I = self._sample_until_pos(E_dist).squeeze(0)
+
+            I_dist = BivariateNormal(*self.flow_moments_from("I", state, t))
+            I_T, I_U = self._sample_until_pos(I_dist).squeeze(0).t()
+
+            T_dist = BivariateNormal(*self.flow_moments_from("T", state, t))
+            T_R, T_D = self._sample_until_pos(T_dist).squeeze(0).t()
+
+            flows = Flows(S_E=S_E, E_I=E_I, I_T=I_T, I_U=I_U, T_R=T_R, T_D=T_D)
+            if flows.any_negative():
+                warnings.warn("Negative flow :(")
+
+            return state.add_flow(flows)
+
+
+SeiturdModel = SeiturdModelNormalsRejectionNaive  # default implementation
+
+
+def flow_multinomial_moments(
     n: torch.Tensor, p: torch.Tensor, fudge: float = 1e-7
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """

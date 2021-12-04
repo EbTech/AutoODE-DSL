@@ -169,8 +169,9 @@ class BaseHistory(torch.nn.Module):
             device=N.device,
             dtype=N.dtype,
         )
-        for i, state in enumerate(states):
-            self[i] = state
+        with torch.no_grad():
+            for i, state in enumerate(states):
+                self[i] = state
         return self
 
     def __getitem__(self, i: int):
