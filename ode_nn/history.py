@@ -109,10 +109,14 @@ class BaseHistory(torch.nn.Module):
 
     def __init__(
         self,
-        N: torch.Tensor,  # total pop, shape [num_regions]
-        num_pos_and_alive: torch.Tensor,  # T + R, shape [num_days, num_regions]
-        num_dead: torch.Tensor,  # D, shape [num_days, num_regions]
+        *,  # pass all arguments by keyword
+        N: Optional[torch.Tensor] = None,  # total pop, shape [num_regions]
+        num_pos_and_alive: Optional[
+            torch.Tensor
+        ] = None,  # T + R, shape [num_days, num_regions]
+        num_dead: Optional[torch.Tensor] = None,  # D, shape [num_days, num_regions]
         # num_days: int,
+        SEITURD: Optional[torch.Tensor] = None,
         requires_grad: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -132,6 +136,19 @@ class BaseHistory(torch.nn.Module):
         def cast(t):
             return torch.as_tensor(t, device=device, dtype=dtype).detach().clone()
 
+        if SEITURD is not None:
+            if N is not None:
+                raise ValueError("don't pass both N and SEITURD")
+            if num_pos_and_alive is not None:
+                raise ValueError("don't pass both num_pos_and_alive and SEITURD")
+            if num_dead is not None:
+                raise ValueError("don't pass both num_dead and SEITURD")
+            Ns = SEITURD.sum(axis=2)
+            #             assert np.allclose(Ns[:, np.random.choice(Ns.shape[1])], Ns[:, 0])
+            N = Ns[0]
+            num_pos_and_alive = SEITURD[..., 3] + SEITURD[..., 5]
+            num_dead = SEITURD[..., -1]
+
         self.N = cast(N)
         self.num_pos_and_alive = cast(num_pos_and_alive)  # total of T + R
         (self.num_days, self.num_regions) = self.num_pos_and_alive.shape
@@ -150,6 +167,9 @@ class BaseHistory(torch.nn.Module):
         dataset: C19Dataset,
         first_date: Optional[datetime.date] = None,
         last_date: Optional[datetime.date] = None,
+        death_trajectory={"E": 22, "I": 19, "T": 14},
+        recovery_trajectory={"E": 22, "I": 19, "T": 14},
+        extend_mean_time=7,
         **kwargs,
     ):
         # must be a nicer way to do this....
@@ -163,7 +183,50 @@ class BaseHistory(torch.nn.Module):
         TRD = dataset.tensor[which, 0, :]
         D = dataset.tensor[which, -1, :]
         TR = TRD - D
-        return cls(N=dataset.pop_2018, num_pos_and_alive=TR, num_dead=D, **kwargs)
+        N = dataset.pop_2018
+
+        extra_days = max(
+            max(death_trajectory.values()), max(recovery_trajectory.values())
+        )
+
+        death_rate = torch.diff(D[-(extend_mean_time + 1) :], axis=0).mean(
+            axis=0, keepdims=True
+        )
+        extra_D = D[-1] + death_rate * torch.arange(1, extra_days + 1)[:, None]
+        extended_D = torch.cat([D, extra_D.round()], 0)
+
+        test_rate = torch.diff(TR[-(extend_mean_time + 1) :], axis=0).mean(
+            axis=0, keepdims=True
+        )
+        extra_TR = TR[-1] + test_rate * torch.arange(1, extra_days + 1)[:, None]
+        extended_TR = torch.cat([TR, extra_TR.round()], 0)
+
+        ts = np.arange(D.shape[0])
+        E = (
+            extended_D[ts + death_trajectory["E"]]
+            - extended_D[ts + death_trajectory["I"]]
+            + extended_TR[ts + recovery_trajectory["E"]]
+            - extended_TR[ts + recovery_trajectory["I"]]
+        )
+        I = (  # noqa: E741
+            extended_D[ts + death_trajectory["I"]]
+            - extended_D[ts + death_trajectory["T"]]
+            + extended_TR[ts + recovery_trajectory["I"]]
+            - extended_TR[ts + recovery_trajectory["T"]]
+        )
+        T = (
+            extended_D[ts + death_trajectory["T"]]
+            - extended_D[ts]
+            + extended_TR[ts + recovery_trajectory["T"]]
+            - extended_TR[ts]
+        )
+        R = TR - T
+        SU = N - (E + I + TRD)
+        S = SU - 5  # TODO: this is dumb
+        U = SU - S
+        SEITURD = torch.stack([S, E, I, T, U, R, D], 2)
+
+        return cls(SEITURD=SEITURD, **kwargs)
 
     @classmethod
     def from_states(cls, states: list[State]):
@@ -206,17 +269,21 @@ class HistoryWithImplicits(BaseHistory):
     This approach has no "built-in" protection against negative values.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *, SEITURD=None, **kwargs):
+        super().__init__(SEITURD=SEITURD, **kwargs)
 
-        # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
-        # constraints equals 4 states to fit
-        self.data = torch.full(
-            (4, self.num_days, self.num_regions),
-            0.0,
-            device=self._device,
-            requires_grad=self._requires_grad,
-        )
+        if SEITURD is not None:
+            self.data = torch.as_tensor(SEITURD.detach(), device=self._device)
+            self.data.requires_grad_(self._requires_grad)
+        else:
+            # 7 SEITURD states minus 1 population constraint minus 2 data-enforced
+            # constraints equals 4 states to fit
+            self.data = torch.full(
+                (4, self.num_days, self.num_regions),
+                0.0,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
 
         # initializing to 0 makes the likelihoods also act weird
         # arbitrarily choose to divide available pops evenly among SEIU and TR
@@ -281,22 +348,32 @@ class HistoryWithSoftmax(BaseHistory):
     "logits" so that the sum is correct.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *, SEITURD=None, **kwargs):
+        super().__init__(SEITURD=SEITURD, **kwargs)
 
-        def make(n):
-            # TODO - this doesn't make parameters
-            return torch.nn.Parameter(
-                torch.full(
-                    (self.num_days, self.num_regions, n),
-                    0.0,
-                    device=self._device,
-                    requires_grad=self._requires_grad,
+        if SEITURD is not None:
+
+            def make(n):
+                return torch.nn.Parameter(
+                    torch.full(
+                        (self.num_days, self.num_regions, n),
+                        0.0,
+                        device=self._device,
+                        requires_grad=self._requires_grad,
+                    )
                 )
-            )
 
-        self.logits_SEIU = make(4)
-        self.logits_TR = make(2)
+            self.logits_SEIU = make(4)
+            self.logits_TR = make(2)
+        else:
+
+            def logitify(t):
+                res = torch.log(torch.as_tensor(t, device=self._device).detach())
+                res.requires_grad_(self._requires_grad)
+                return res
+
+            self.logits_SEIU = logitify(SEITURD[..., [0, 1, 2, 4]])
+            self.logits_TR = logitify(SEITURD[..., [3, 5]])
 
     # this feels incredibly wasteful :/ - maybe implement caching...
     SEIU = property(
