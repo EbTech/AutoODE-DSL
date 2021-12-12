@@ -144,7 +144,7 @@ class BaseHistory(torch.nn.Module):
             if num_dead is not None:
                 raise ValueError("don't pass both num_dead and SEITURD")
             Ns = SEITURD.sum(axis=2)
-            #             assert np.allclose(Ns[:, np.random.choice(Ns.shape[1])], Ns[:, 0])
+            #             assert np.allclose(Ns[np.random.choice(Ns.shape[0])], Ns[0])
             N = Ns[0]
             num_pos_and_alive = SEITURD[..., 3] + SEITURD[..., 5]
             num_dead = SEITURD[..., -1]
@@ -185,48 +185,74 @@ class BaseHistory(torch.nn.Module):
         TR = TRD - D
         N = dataset.pop_2018
 
+        num_days = D.shape[0]
         extra_days = max(
             max(death_trajectory.values()), max(recovery_trajectory.values())
         )
 
-        death_rate = torch.diff(D[-(extend_mean_time + 1) :], axis=0).mean(
-            axis=0, keepdims=True
-        )
-        extra_D = D[-1] + death_rate * torch.arange(1, extra_days + 1)[:, None]
-        extended_D = torch.cat([D, extra_D.round()], 0)
+        def extend_vals(vals, length, mean_time=extend_mean_time):
+            start_rate = (vals[mean_time] - vals[0]) / mean_time
+            start_vals = vals[0] + start_rate[None] * torch.arange(-length, 0)[:, None]
 
-        test_rate = torch.diff(TR[-(extend_mean_time + 1) :], axis=0).mean(
-            axis=0, keepdims=True
-        )
-        extra_TR = TR[-1] + test_rate * torch.arange(1, extra_days + 1)[:, None]
-        extended_TR = torch.cat([TR, extra_TR.round()], 0)
+            end_rate = (vals[-1] - vals[-mean_time - 1]) / mean_time
+            end_vals = vals[-1] + end_rate[None] * torch.arange(1, length + 1)[:, None]
 
-        ts = np.arange(D.shape[0])
+            return torch.cat(
+                [start_vals.clamp(min=0).round(), vals, end_vals.round()], 0
+            )
+
+        # these go from -2 * extra_days to num_days + 2 * extra_days
+        extended_D = extend_vals(D, 2 * extra_days)
+        extended_TRD = extend_vals(TRD, 2 * extra_days)
+
+        # these go from -extra_days to num_days + extra_days
+        traj_ts_in_extended = 2 * extra_days + np.arange(
+            -extra_days, num_days + extra_days
+        )
+        cum_Dtraj = extended_D[traj_ts_in_extended + death_trajectory["D"]]
+        cum_Rtraj = (
+            extended_TRD[traj_ts_in_extended + recovery_trajectory["T"]]
+            - cum_Dtraj[
+                np.arange(num_days + 2 * extra_days)
+                + recovery_trajectory["T"]
+                - death_trajectory["T"]
+            ]
+        )
+
+        # these go from 0 to t_max
+        ts_in_traj = extra_days + np.arange(num_days)
         E = (
-            extended_D[ts + death_trajectory["E"]]
-            - extended_D[ts + death_trajectory["I"]]
-            + extended_TR[ts + recovery_trajectory["E"]]
-            - extended_TR[ts + recovery_trajectory["I"]]
+            cum_Dtraj[ts_in_traj - death_trajectory["E"]]
+            - cum_Dtraj[ts_in_traj - death_trajectory["I"]]
+            + cum_Rtraj[ts_in_traj - recovery_trajectory["E"]]
+            - cum_Rtraj[ts_in_traj - recovery_trajectory["I"]]
         )
         I = (  # noqa: E741
-            extended_D[ts + death_trajectory["I"]]
-            - extended_D[ts + death_trajectory["T"]]
-            + extended_TR[ts + recovery_trajectory["I"]]
-            - extended_TR[ts + recovery_trajectory["T"]]
+            cum_Dtraj[ts_in_traj - death_trajectory["I"]]
+            - cum_Dtraj[ts_in_traj - death_trajectory["T"]]
+            + cum_Rtraj[ts_in_traj - recovery_trajectory["I"]]
+            - cum_Rtraj[ts_in_traj - recovery_trajectory["T"]]
         )
         T = (
-            extended_D[ts + death_trajectory["T"]]
-            - extended_D[ts]
-            + extended_TR[ts + recovery_trajectory["T"]]
-            - extended_TR[ts]
+            cum_Dtraj[ts_in_traj - death_trajectory["T"]]
+            - cum_Dtraj[ts_in_traj - death_trajectory["D"]]
+            + cum_Rtraj[ts_in_traj - recovery_trajectory["T"]]
+            - cum_Rtraj[ts_in_traj - recovery_trajectory["R"]]
         )
-        R = TR - T
+        R = cum_Rtraj[ts_in_traj - recovery_trajectory["R"]]
+
+        print("TR", (TR - (T + R)).abs().max())
+        print("D", (D - cum_Dtraj[ts_in_traj - death_trajectory["D"]]).abs().max())
+
         SU = N - (E + I + TRD)
         S = SU - 5  # TODO: this is dumb
         U = SU - S
         SEITURD = torch.stack([S, E, I, T, U, R, D], 2)
+        print(f"nan: {torch.isnan(SEITURD).sum()}; negative: {(SEITURD < 0).sum()}")
 
-        return cls(SEITURD=SEITURD, **kwargs)
+        h = cls(SEITURD=SEITURD, **kwargs)
+        print(f"nan: {torch.isnan(h.SEITURD).sum()}; negative: {(h.SEITURD < 0).sum()}")
+        return h
 
     @classmethod
     def from_states(cls, states: list[State]):
@@ -351,7 +377,7 @@ class HistoryWithSoftmax(BaseHistory):
     def __init__(self, *, SEITURD=None, **kwargs):
         super().__init__(SEITURD=SEITURD, **kwargs)
 
-        if SEITURD is not None:
+        if SEITURD is None:
 
             def make(n):
                 return torch.nn.Parameter(
@@ -392,6 +418,11 @@ class HistoryWithSoftmax(BaseHistory):
     R = property(lambda self: self.TR[..., 1])
 
     D = property(lambda self: self.num_dead)
+
+    # silly and slower-than-necessary way
+    SEITURD = property(
+        lambda self: torch.stack([getattr(self, k) for k in self.fields], 2)
+    )
 
     def __setitem__(self, i: int, state: State):
         assert torch.allclose(state.N, self.N)
